@@ -70,3 +70,28 @@ This **Stage 1** seeder sets initial balances directly and creates unpaid future
 **Do not run `--apply` from four different computers**. Run it once with the shared demo sandbox key, then distribute the generated manifest IDs securely. Re-running using the same local manifest is designed to reuse records. `--apply` in a new directory with a new manifest generates a separate dataset.
 
 **Definition of done:** Bindhu confirms `--verify` succeeds; Flutter displays the seeded checking and savings accounts and three future bills from a backend response.
+
+
+## Troubleshooting: "2 validation errors for Bill"
+
+Earlier versions created a rent bill without `recurring_date` and
+`upcoming_payment_date`. The current seed script supplies both fields and
+tries to repair that specific existing rent bill by its ID from
+`backend/seed_manifest.json` before listing bills.
+
+1. Keep the original `seed_manifest.json`. Do **not** delete or reset it.
+2. Run `git pull origin main`.
+3. Run `python backend\\scripts\\seed_nessie.py --apply` in PowerShell.
+4. If successful, run `python backend\\scripts\\seed_nessie.py --verify`.
+
+The updated script also recognizes when the previous seeder accidentally
+assigned Sarah's ID to Jamie; it verifies the customer name and creates a
+distinct partner customer if necessary.
+
+If the old rent bill is still unreadable after the update request, **stop**.
+The API may be ignoring required read fields on write; do not repeatedly
+insert new bills or manually delete records without checking the returned
+bill ID and the contents of your local manifest.
+
+A successful GitHub commit does not insert/repair Nessie data: the script
+must be run locally with your private key.
