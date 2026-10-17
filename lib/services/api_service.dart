@@ -104,18 +104,20 @@ class ApiService {
 
   static Future<Map<String, dynamic>> getAutoPayPreview({
     double targetPct = 29, String account = 'card_a',
-    double safetyBuffer = 100,
+    double safetyBuffer = 100, double assumedSavingsTransfer = 0,
   }) => _request('POST', '/api/autopay/preview', {
         'target_utilization_pct': targetPct,
         'account': account, 'safety_buffer': safetyBuffer,
+        'assumed_savings_transfer': assumedSavingsTransfer,
       });
 
   static Future<Map<String, dynamic>> scheduleAutoPay({
     double targetPct = 29, String account = 'card_a',
-    double safetyBuffer = 100,
+    double safetyBuffer = 100, double assumedSavingsTransfer = 0,
   }) => _request('POST', '/api/autopay/plans', {
         'target_utilization_pct': targetPct,
         'account': account, 'safety_buffer': safetyBuffer,
+        'assumed_savings_transfer': assumedSavingsTransfer,
         'confirmed': true,
       });
 
