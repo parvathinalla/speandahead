@@ -1,205 +1,149 @@
 import 'dart:convert';
 import 'package:http/http.dart' as http;
 
+/// All banking credentials stay in FastAPI; Flutter never calls Nessie directly.
+/// Run Web/Windows: flutter run -d chrome --dart-define=API_BASE_URL=http://127.0.0.1:8000
+/// Android emulator: replace 127.0.0.1 with 10.0.2.2.
+class ApiException implements Exception {
+  final String message;
+  final int? statusCode;
+  ApiException(this.message, {this.statusCode});
+  @override
+  String toString() => message;
+}
+
 class ApiService {
-  // Use 10.0.2.2 for Android emulator, localhost for iOS/desktop/web
-  static String baseUrl = "http://127.0.0.1:8000";
+  static String baseUrl = const String.fromEnvironment(
+    'API_BASE_URL', defaultValue: 'http://127.0.0.1:8000');
 
-  // 1. Bill Forecast
+  /// Set after Auth0 login. Demo backend mode requires no bearer token.
+  static String? bearerToken;
+
+  static Map<String, String> get _headers => {
+        'Content-Type': 'application/json',
+        if (bearerToken != null && bearerToken!.isNotEmpty)
+          'Authorization': 'Bearer $bearerToken',
+      };
+
+  static Future<Map<String, dynamic>> _request(
+      String method, String path, [Map<String, dynamic>? body]) async {
+    try {
+      final uri = Uri.parse('$baseUrl$path');
+      final response = method == 'GET'
+          ? await http.get(uri, headers: _headers).timeout(const Duration(seconds: 15))
+          : await http.post(uri, headers: _headers, body: jsonEncode(body ?? {}))
+              .timeout(const Duration(seconds: 15));
+      Map<String, dynamic> payload;
+      try {
+        payload = jsonDecode(response.body) as Map<String, dynamic>;
+      } catch (_) {
+        throw ApiException('Backend returned an invalid response.',
+            statusCode: response.statusCode);
+      }
+      if (response.statusCode < 200 || response.statusCode >= 300) {
+        throw ApiException(
+          'API ' + response.statusCode.toString() + ': ' +
+              (payload['detail']?.toString() ?? 'Request failed'),
+          statusCode: response.statusCode);
+      }
+      return payload;
+    } on ApiException {
+      rethrow;
+    } catch (_) {
+      throw ApiException('Cannot connect to backend at $baseUrl. '
+          'Check that FastAPI is running.');
+    }
+  }
+
+  static Future<Map<String, dynamic>> health() =>
+      _request('GET', '/health');
+
+  static Future<Map<String, dynamic>> getDashboard() =>
+      _request('GET', '/api/dashboard');
+
+  static Future<Map<String, dynamic>> getAccounts() =>
+      _request('GET', '/api/accounts');
+
+  static Future<Map<String, dynamic>> getBills() =>
+      _request('GET', '/api/bills');
+
   static Future<Map<String, dynamic>> getBillForecast({
-    double checking = 450.0,
-    double savings = 1500.0,
-    int days = 14,
-  }) async {
-    try {
-      final res = await http.post(
-        Uri.parse("$baseUrl/api/bills/forecast"),
-        headers: {"Content-Type": "application/json"},
-        body: jsonEncode({
-          "checking_balance": checking,
-          "savings_balance": savings,
-          "horizon_days": days,
-        }),
-      ).timeout(const Duration(seconds: 4));
+    int days = 14, double protectedReserve = 0,
+  }) => _request('POST', '/api/bills/forecast', {
+        'horizon_days': days, 'protected_reserve': protectedReserve,
+      });
 
-      if (res.statusCode == 200) {
-        return jsonDecode(res.body);
-      }
-    } catch (_) {}
-
-    // Graceful offline fixture matching Image 4
-    return {
-      "checking_balance": checking,
-      "total_bills_due": 620.0,
-      "shortfall_amount": 170.0,
-      "projected_end_balance": -170.0,
-      "is_shortfall": true,
-      "upcoming_bills": [
-        {"name": "Rent (Installment)", "due_date": "Oct 20", "amount": 360.0},
-        {"name": "Electricity", "due_date": "Oct 22", "amount": 120.0},
-        {"name": "Internet", "due_date": "Oct 25", "amount": 60.0},
-        {"name": "Phone", "due_date": "Oct 28", "amount": 80.0},
-      ],
-      "explanation": "Checking has \$450; upcoming bills total \$620. CreditPilot warns about a \$170 shortfall."
-    };
-  }
-
-  // 2. Card Evaluation
   static Future<Map<String, dynamic>> evaluateCards({
-    double amount = 120.0,
-    String category = "groceries",
-    String merchant = "Whole Foods",
-  }) async {
-    try {
-      final res = await http.post(
-        Uri.parse("$baseUrl/api/cards/evaluate"),
-        headers: {"Content-Type": "application/json"},
-        body: jsonEncode({
-          "purchase_amount": amount,
-          "purchase_category": category,
-          "merchant_name": merchant,
-        }),
-      ).timeout(const Duration(seconds: 4));
+    double amount = 120, String category = 'groceries',
+    String merchant = 'Grocery store', double targetPct = 30,
+  }) => _request('POST', '/api/cards/evaluate', {
+        'purchase_amount': amount,
+        'purchase_category': category,
+        'merchant_name': merchant,
+        'utilization_target_pct': targetPct,
+      });
 
-      if (res.statusCode == 200) {
-        return jsonDecode(res.body);
-      }
-    } catch (_) {}
-
-    // Offline fixture matching Image 5
-    return {
-      "purchase_amount": amount,
-      "merchant_name": merchant,
-      "recommended_card": {
-        "card_name": "Savor One",
-        "last4": "5678",
-        "reward_rate_pct": 2.0,
-        "current_utilization_pct": 25.0,
-        "utilization_status": "Healthy range",
-        "recommended_reason": "You'll still earn 2% rewards and keep your utilization low, which can help your overall credit health over time."
-      },
-      "paydown_first_option": 200.0,
-      "disclaimer": "This is a suggestion only. We do not guarantee any change to your credit score."
-    };
-  }
-
-  // 3. Joint Evaluation
   static Future<Map<String, dynamic>> evaluateJoint({
-    double amount = 850.0,
-    String merchant = "Best Buy",
-    String category = "Electronics",
-  }) async {
-    try {
-      final res = await http.post(
-        Uri.parse("$baseUrl/api/joint/evaluate"),
-        headers: {"Content-Type": "application/json"},
-        body: jsonEncode({
-          "amount": amount,
-          "merchant": merchant,
-          "category": category,
-          "initiator_name": "Alex Smith",
-          "partner_name": "Sarah Smith",
-        }),
-      ).timeout(const Duration(seconds: 4));
+    double amount = 850, String merchant = 'Electronics Store',
+    String category = 'Shopping',
+  }) => _request('POST', '/api/joint/evaluate', {
+        'amount': amount, 'merchant': merchant, 'category': category,
+      });
 
-      if (res.statusCode == 200) {
-        return jsonDecode(res.body);
-      }
-    } catch (_) {}
+  static Future<Map<String, dynamic>> requestJointApproval({
+    required double amount, required String merchant,
+  }) => _request('POST', '/api/joint/proposals', {
+        'amount': amount, 'merchant': merchant, 'confirmed': true,
+      });
 
-    // Offline fixture matching Image 6
-    return {
-      "is_unusual": true,
-      "amount": amount,
-      "merchant": merchant,
-      "category": category,
-      "account_name": "Joint Checking (•••• 4321)",
-      "date_time_str": "Today, 10:24 AM",
-      "partner_name": "Sarah Smith",
-      "requires_partner_confirmation": true,
-      "scope_disclaimer": "This works for in-app initiated payments. It does not block all transactions at the bank level."
-    };
-  }
-
-  // 4. Emergency Evaluation
   static Future<Map<String, dynamic>> evaluateEmergency({
-    double checking = 1200.0,
-    double savings = 800.0,
-    double protectedBills = 1200.0,
-    double cost = 1000.0,
-  }) async {
-    try {
-      final res = await http.post(
-        Uri.parse("$baseUrl/api/emergency/evaluate"),
-        headers: {"Content-Type": "application/json"},
-        body: jsonEncode({
-          "checking_balance": checking,
-          "savings_balance": savings,
-          "protected_bills": protectedBills,
-          "emergency_cost": cost,
-        }),
-      ).timeout(const Duration(seconds: 4));
+    double cost = 1000, double buffer = 300, int days = 14,
+  }) => _request('POST', '/api/emergency/evaluate', {
+        'emergency_cost': cost, 'safety_buffer': buffer, 'horizon_days': days,
+      });
 
-      if (res.statusCode == 200) {
-        return jsonDecode(res.body);
-      }
-    } catch (_) {}
-
-    // Offline fixture matching Image 7
-    return {
-      "total_available_funds": checking + savings,
-      "protected_committed_bills": protectedBills,
-      "usable_cash_buffer": (checking + savings) - protectedBills,
-      "estimated_emergency_cost": cost,
-      "potential_gap": 200.0,
-      "is_gap_present": true,
-    };
-  }
-
-  // 5. Smart Utilization AutoPay Preview
   static Future<Map<String, dynamic>> getAutoPayPreview({
-    double targetPct = 29.0,
-    double limit = 1000.0,
-    double balance = 750.0,
-    double checkingFunds = 600.0,
-    double upcomingBills = 250.0,
-    double safetyBuffer = 100.0,
-  }) async {
-    try {
-      final res = await http.post(
-        Uri.parse("$baseUrl/api/autopay/preview"),
-        headers: {"Content-Type": "application/json"},
-        body: jsonEncode({
-          "credit_limit": limit,
-          "current_balance": balance,
-          "target_utilization_pct": targetPct,
-          "checking_funds": checkingFunds,
-          "upcoming_bills_2weeks": upcomingBills,
-          "safety_buffer": safetyBuffer,
-          "expected_statement_date": "Oct 23"
-        }),
-      ).timeout(const Duration(seconds: 4));
+    double targetPct = 29, String account = 'card_a',
+    double safetyBuffer = 100,
+  }) => _request('POST', '/api/autopay/preview', {
+        'target_utilization_pct': targetPct,
+        'account': account, 'safety_buffer': safetyBuffer,
+      });
 
-      if (res.statusCode == 200) {
-        return jsonDecode(res.body);
-      }
-    } catch (_) {}
+  static Future<Map<String, dynamic>> scheduleAutoPay({
+    double targetPct = 29, String account = 'card_a',
+    double safetyBuffer = 100,
+  }) => _request('POST', '/api/autopay/plans', {
+        'target_utilization_pct': targetPct,
+        'account': account, 'safety_buffer': safetyBuffer,
+        'confirmed': true,
+      });
 
-    // Offline fixture matching Image 8
-    return {
-      "card_limit": limit,
-      "current_balance": balance,
-      "current_utilization_pct": 75.0,
-      "target_utilization_pct": targetPct,
-      "suggested_paydown_amount": 460.0,
-      "checking_funds": checkingFunds,
-      "upcoming_bills_2weeks": upcomingBills,
-      "safety_buffer": safetyBuffer,
-      "max_safe_payment_today": 250.0,
-      "is_full_payment_affordable": false,
-      "recommended_payment_amount": 250.0,
-      "expected_statement_date": "Oct 23",
-      "alert_message": "Full \$460 payment is not affordable today. Choose a smaller payment or change the target."
-    };
-  }
+  static Future<Map<String, dynamic>> transferPreview({
+    required double amount, required String idempotencyKey,
+  }) => _request('POST', '/api/transfers/preview', {
+        'amount': amount, 'idempotency_key': idempotencyKey,
+      });
+
+  static Future<Map<String, dynamic>> executeTransfer({
+    required double amount, required String idempotencyKey,
+  }) => _request('POST', '/api/transfers/execute', {
+        'amount': amount, 'idempotency_key': idempotencyKey,
+        'confirmed': true,
+      });
+
+  static Future<Map<String, dynamic>> simulatePurchase({
+    required double amount, required String category,
+    double? emergencyCost,
+  }) => _request('POST', '/api/decisions/purchase', {
+        'purchase_amount': amount,
+        'purchase_category': category,
+        if (emergencyCost != null) 'emergency_cost': emergencyCost,
+      });
+
+  static Future<Map<String, dynamic>> explain({
+    required String topic, required Map<String, dynamic> result,
+  }) => _request('POST', '/api/ai/explain', {
+        'topic': topic, 'result': result,
+      });
 }
