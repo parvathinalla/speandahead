@@ -132,7 +132,7 @@ def build(state):
     return tag, start, customers, accounts, merchants, bills
 
 
-def run(apply=False, verify=False, repair_bills=False):
+def run(apply=False, verify=False):
     env()
     if MANIFEST.exists():
         state = json.loads(MANIFEST.read_text(encoding="utf8"))
@@ -154,10 +154,19 @@ def run(apply=False, verify=False, repair_bills=False):
     api = Nessie()
     if verify:
         for group, prefix in (("customers", "/customers/"),
-                              ("accounts", "/accounts/"), ("bills", "/bills/")):
+                              ("accounts", "/accounts/")):
             for name, identity in state.get("ids", {}).get(group, {}).items():
                 response = api.get(prefix + identity)
                 print(group, name, "OK" if response.get("_id") == identity else "CHECK")
+        for name, bill in state.get("app_bills", {}).items():
+            required = ("payment_amount", "payment_date", "account_id", "payee")
+            print("bills", name, "APP-ONLY OK" if all(k in bill for k in required) else "APP-ONLY CHECK")
+        for name, identity in state.get("ids", {}).get("bills", {}).items():
+            try:
+                api.get("/bills/" + identity)
+                print("Nessie bill", name, "OK")
+            except RuntimeError as error:
+                print("Nessie bill", name, "UNREADABLE (known sandbox issue)")
         return
 
     save(state)  # preserve seed ID even if a later request fails
@@ -192,54 +201,32 @@ def run(apply=False, verify=False, repair_bills=False):
         upsert(api, state, "merchants", name, "/merchants", "/merchants", value, "name")
     check_id = state["ids"]["accounts"]["checking"]
     bill_path = "/accounts/" + check_id + "/bills"
+    # BillCreate and BillUpdate reject read-only upcoming_payment_date, but
+    # Nessie's Bill read model requires it. An existing rent bill is unreadable.
+    # Never delete or insert further malformed bills automatically.
+    # Save a complete, clearly labeled app-only bill schedule for the demo.
+    state["app_bills"] = {}
     for name, (payee, amount, days) in bills.items():
         due = start + timedelta(days=days)
-        # Upcoming_payment_date is READ-ONLY: BillCreate/BillUpdate reject it.
-        # recurring_date is the writable input, and may allow Nessie to calculate it.
-        payload = {"status": "pending", "payee": payee,
-                   "nickname": tag + "-" + name,
-                   "payment_date": due.isoformat(),
-                   "recurring_date": due.day,
-                   "payment_amount": amount}
-        existing_id = state.get("ids", {}).get("bills", {}).get(name)
-        if existing_id:
-            try:
-                api.get("/bills/" + existing_id)
-            except RuntimeError as error:
-                if "validation errors for Bill" not in str(error):
-                    raise
-                print("REPAIR existing incomplete bill:", name)
-                # Do not pass computed read-only fields into PUT.
-                api.put("/bills/" + existing_id, payload)
-                try:
-                    api.get("/bills/" + existing_id)
-                except RuntimeError as repair_error:
-                    if "validation errors for Bill" not in str(repair_error):
-                        raise
-                    if not repair_bills:
-                        raise RuntimeError(
-                            "Nessie accepted a valid BillUpdate but bill " + existing_id +
-                            " remains unreadable. This may be an API inconsistency. "
-                            "For this fictional demo bill only, you can explicitly "
-                            "replace it by running --apply --repair-bills. "
-                            "That will DELETE the known invalid bill and recreate it."
-                        ) from None
-                    # Explicitly requested only: delete the single known malformed
-                    # demo bill and recreate it with writable fields, never all bills.
-                    print("DELETE malformed demo bill:", name, existing_id)
-                    api.delete("/bills/" + existing_id)
-                    state["ids"]["bills"].pop(name, None)
-                    save(state)
-        upsert(api, state, "bills", name, bill_path, bill_path, payload, "nickname")
+        state["app_bills"][name] = {
+            "payee": payee, "nickname": tag + "-" + name,
+            "status": "pending", "payment_date": due.isoformat(),
+            "upcoming_payment_date": due.isoformat(),
+            "recurring_date": due.day, "payment_amount": amount,
+            "account_id": check_id, "source": "app_simulation"
+        }
+    state["bill_seed_mode"] = "app_only_due_to_nessie_read_validation"
+    save(state)
+    print("BILLS: 3 future bills saved as APP-ONLY scenario data.")
+    print("Nessie bill creation is paused pending server-side schema resolution.")
+    # Check previously created bills by known ID; avoid a collection GET because
+    # the malformed rent bill makes that endpoint fail validation.
+    for name, identity in state.get("ids", {}).get("bills", {}).items():
         try:
-            api.get("/bills/" + state["ids"]["bills"][name])
-        except RuntimeError as read_error:
-            raise RuntimeError(
-                "Nessie bill " + name + " cannot be read even with recurring_date. "
-                "Stop seeding: Nessie may have a read/write schema inconsistency. "
-                "Do not rerun --apply until you inspect bill ID " +
-                state["ids"]["bills"][name] + ": " + str(read_error)
-            ) from None
+            api.get("/bills/" + identity)
+            print("Existing Nessie bill", name, "readable")
+        except RuntimeError:
+            print("Existing Nessie bill", name, "unreadable; left unchanged")
 
     ids = state["ids"]
     state["app_scenario"] = {
@@ -265,13 +252,9 @@ if __name__ == "__main__":
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--apply", action="store_true")
     mode.add_argument("--verify", action="store_true")
-    parser.add_argument("--repair-bills", action="store_true",
-                        help="Explicitly replace only previously seeded malformed demo bills")
     args = parser.parse_args()
-    if args.repair_bills and not args.apply:
-        parser.error("--repair-bills requires --apply")
     try:
-        run(args.apply, args.verify, args.repair_bills)
+        run(args.apply, args.verify)
     except (RuntimeError, ValueError, OSError) as e:
         print("ERROR:", e, file=sys.stderr)
         sys.exit(1)
