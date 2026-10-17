@@ -26,12 +26,14 @@ class ApiService {
       };
 
   static Future<Map<String, dynamic>> _request(
-      String method, String path, [Map<String, dynamic>? body]) async {
+      String method, String path, [Map<String, dynamic>? body,
+        Map<String, String>? extraHeaders]) async {
     try {
       final uri = Uri.parse('$baseUrl$path');
+      final headers = {..._headers, if (extraHeaders != null) ...extraHeaders};
       final response = method == 'GET'
-          ? await http.get(uri, headers: _headers).timeout(const Duration(seconds: 15))
-          : await http.post(uri, headers: _headers, body: jsonEncode(body ?? {}))
+          ? await http.get(uri, headers: headers).timeout(const Duration(seconds: 15))
+          : await http.post(uri, headers: headers, body: jsonEncode(body ?? {}))
               .timeout(const Duration(seconds: 15));
       Map<String, dynamic> payload;
       try {
@@ -95,6 +97,13 @@ class ApiService {
   }) => _request('POST', '/api/joint/proposals', {
         'amount': amount, 'merchant': merchant, 'confirmed': true,
       });
+
+  static Future<Map<String, dynamic>> decideJointProposal({
+    required String proposalId, required bool approve,
+  }) => _request(
+      'POST', '/api/joint/proposals/' + proposalId + '/decision',
+      {'approve': approve},
+      {'X-Demo-User': 'jamie'}); // Only works as demo user in AUTH_MODE=demo.
 
   static Future<Map<String, dynamic>> evaluateEmergency({
     double cost = 1000, double buffer = 300, int days = 14,
