@@ -61,3 +61,11 @@ app.*.map.json
 # Generated Nessie sandbox IDs and local seeding state
 backend/seed_manifest.json
 backend/seed_manifest.json.tmp
+
+# Backend local databases, caches, venv
+*.sqlite3
+*.sqlite3-*
+.pytest_cache/
+__pycache__/
+.venv/
+.env.local
