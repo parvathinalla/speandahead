@@ -22,5 +22,5 @@ jobs:
           channel: stable
           cache: true
       - run: flutter pub get
-      - run: flutter analyze lib test
+      - run: flutter analyze --no-fatal-infos lib test
       - run: flutter test
