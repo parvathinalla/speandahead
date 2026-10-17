@@ -124,7 +124,7 @@ class _AutoPayScreenState extends State<AutoPayScreen> {
             const SizedBox(height: 8),
             SwitchListTile(
               contentPadding: EdgeInsets.zero,
-              title: const Text('What if I move $800 from savings?'),
+              title: const Text('What if I move \$800 from savings?'),
               subtitle: const Text('Preview only; no bank transfer occurs.'),
               value: assumedSavings > 0,
               onChanged: (value) {
