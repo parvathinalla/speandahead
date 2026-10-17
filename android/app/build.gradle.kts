@@ -17,6 +17,13 @@ android {
     defaultConfig {
         // TODO: Specify your own unique Application ID (https://developer.android.com/studio/build/application-id.html).
         applicationId = "com.example.creditpilot_mobile"
+        // Use -Pauth0Domain=YOUR_TENANT.us.auth0.com when building Android.
+        // Never put a client secret in the Android binary.
+        manifestPlaceholders["auth0Domain"] =
+            (project.findProperty("auth0Domain") as String?)
+                ?: System.getenv("AUTH0_DOMAIN")
+                ?: "configure-auth0-domain.auth0.com"
+        manifestPlaceholders["auth0Scheme"] = "creditpilot"
         // You can update the following values to match your application needs.
         // For more information, see: https://flutter.dev/to/review-gradle-config.
         minSdk = flutter.minSdkVersion
