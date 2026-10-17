@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../theme/app_theme.dart';
+import '../auth/auth_session.dart';
 import 'bills_screen.dart';
 import 'cards_screen.dart';
 import 'autopay_screen.dart';
@@ -72,14 +73,39 @@ class _MainShellState extends State<MainShell> {
             ),
             onPressed: () {},
           ),
-          Padding(
-            padding: const EdgeInsets.only(right: 14, left: 4),
-            child: CircleAvatar(
-              radius: 15,
-              backgroundColor: const Color(0xFFE2E8F0),
-              child: const Text(
-                "JS",
-                style: TextStyle(fontSize: 11, fontWeight: FontWeight.w800, color: AppTheme.brandNavy),
+          PopupMenuButton<String>(
+            tooltip: 'Account menu',
+            onSelected: (value) {
+              if (value == 'logout') {
+                AuthSession.instance.signOut();
+              }
+            },
+            itemBuilder: (context) => [
+              PopupMenuItem(
+                enabled: false,
+                child: Text(AuthSession.instance.profile?.email ??
+                    AuthSession.instance.profile?.displayName ?? 'Signed in')),
+              const PopupMenuDivider(),
+              const PopupMenuItem(
+                value: 'logout',
+                child: Row(children: [
+                  Icon(Icons.logout, size: 18),
+                  SizedBox(width: 10),
+                  Text('Log out'),
+                ]),
+              ),
+            ],
+            child: Padding(
+              padding: const EdgeInsets.only(right: 14, left: 4),
+              child: CircleAvatar(
+                radius: 16,
+                backgroundColor: const Color(0xFFE2E8F0),
+                child: Text(
+                  (AuthSession.instance.profile?.displayName ?? 'Member')
+                      .substring(0, 1).toUpperCase(),
+                  style: const TextStyle(fontSize: 13,
+                    fontWeight: FontWeight.w800, color: AppTheme.brandNavy),
+                ),
               ),
             ),
           ),
