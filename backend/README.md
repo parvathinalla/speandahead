@@ -64,7 +64,7 @@ For Android emulator, use `--dart-define=API_BASE_URL=http://10.0.2.2:8000`. For
 
 **Local hackathon:** `AUTH_MODE=demo`, `PAYMENT_MODE=simulate`. This is deliberately unsecured synthetic demo data and must not be publicly deployed.
 
-**With Auth0:** Set `AUTH_MODE=auth0`, `AUTH0_DOMAIN`, `AUTH0_AUDIENCE`. Tokens are verified against Auth0 JWKS, expected issuer, audience and expiry. Bindhu should pass the Auth0 bearer access token to `ApiService.bearerToken` after login. Set `JOINT_PARTNER_SUB` to the partner's Auth0 subject before exposing joint approvals outside demo mode.
+**With Auth0:** Set `AUTH_MODE=auth0`, `AUTH0_DOMAIN`, `AUTH0_AUDIENCE`, and `AUTH0_ALLOWED_SUBS` (comma-separated authorized Auth0 subject IDs for the fictional seed sandbox). Tokens are verified against Auth0 JWKS, expected issuer, audience and expiry. Bindhu should pass the Auth0 bearer access token to `ApiService.bearerToken` after login. Set `JOINT_PARTNER_SUB` to the partner's Auth0 subject before exposing joint approvals outside demo mode. For optional Nessie sandbox transfers, also set `NESSIE_TRANSFER_ALLOWED_SUB` to the one Auth0 subject allowed to initiate sandbox transfers.
 
 **Gemini:** Set `GEMINI_API_KEY` locally. Without it, `/api/ai/explain` returns a deterministic explanation with `ai_used=false`. This allows offline demonstrations.
 
