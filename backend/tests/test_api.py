@@ -151,3 +151,77 @@ def test_integrated_purchase_decision(client):
 def test_auth0_mode_rejects_missing_token(client, monkeypatch):
     monkeypatch.setattr(main, "AUTH_MODE", "auth0")
     assert client.get("/api/dashboard").status_code == 401
+
+def test_nessie_snapshot_coalesces_simultaneous_account_reads():
+    """Five UI tabs should never trigger thirty Nessie account requests."""
+    import asyncio
+
+    class CountingGateway(main.NessieGateway):
+        def __init__(self):
+            super().__init__()
+            self.calls = 0
+
+        async def account(self, account_id):
+            self.calls += 1
+            await asyncio.sleep(.005)
+            return {"_id": account_id, "balance": 100}
+
+    async def fetch():
+        gateway = CountingGateway()
+        ids = {name: name for name in (
+            "checking", "savings", "card_a", "card_b",
+            "joint_demo", "partner_checking")}
+        responses = await asyncio.gather(*(
+            gateway.account_snapshot(ids) for _ in range(5)))
+        assert len(responses) == 5
+        assert all(len(r) == 6 for r in responses)
+        assert gateway.calls == 6
+        # Reusing the snapshot should not query Nessie again.
+        await gateway.account_snapshot(ids)
+        assert gateway.calls == 6
+        # An explicit invalidation must trigger six new reads.
+        gateway._cache_until = 0
+        await gateway.account_snapshot(ids)
+        assert gateway.calls == 12
+
+    asyncio.run(fetch())
+
+
+def test_nessie_gateway_retries_only_safe_get(monkeypatch):
+    """Transient GET errors are retried; potentially mutating POST is not."""
+    import asyncio
+    import httpx
+    from fastapi import HTTPException
+
+    monkeypatch.setenv("NESSIE_API_KEY", "unit-test-not-a-real-key")
+    original_client = httpx.AsyncClient
+    calls = []
+
+    def handler(request):
+        calls.append(request.method)
+        if request.method == "GET" and calls.count("GET") < 3:
+            return httpx.Response(503, json={"error": "temporary"})
+        if request.method == "POST":
+            return httpx.Response(503, json={"error": "temporary"})
+        return httpx.Response(200, json={"_id": "fake-id", "balance": 500})
+
+    def mock_client(**kwargs):
+        return original_client(transport=httpx.MockTransport(handler), **kwargs)
+
+    monkeypatch.setattr(main.httpx, "AsyncClient", mock_client)
+
+    async def verify():
+        gateway = main.NessieGateway()
+        account = await gateway.request("GET", "/accounts/fake-id")
+        assert account["_id"] == "fake-id"
+        assert calls.count("GET") == 3
+        try:
+            await gateway.request("POST", "/accounts/fake-id/transfers",
+                                  {"amount": 10})
+        except HTTPException as exc:
+            assert exc.status_code == 503
+        else:
+            raise AssertionError("POST should fail, never silently succeed")
+        assert calls.count("POST") == 1
+
+    asyncio.run(verify())
