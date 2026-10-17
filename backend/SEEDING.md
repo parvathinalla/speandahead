@@ -44,9 +44,9 @@ python backend\scripts\seed_nessie.py --verify
 | Shared demo checking | $2,000 (owned by Sarah in Nessie) |
 | Jamie checking | $350 |
 | Grocery, fuel, cafe | 3 fictional merchant records |
-| Rent due +3 days | $400 |
-| Electricity due +7 days | $150 |
-| Internet due +12 days | $100 |
+| Rent due +3 days (app-only fallback) | $400 |
+| Electricity due +7 days (app-only fallback) | $150 |
+| Internet due +12 days (app-only fallback) | $100 |
 
 The three upcoming bills total $650, versus $500 in checking: a projected $150 shortfall.
 
@@ -72,39 +72,30 @@ This **Stage 1** seeder sets initial balances directly and creates unpaid future
 **Definition of done:** Bindhu confirms `--verify` succeeds; Flutter displays the seeded checking and savings accounts and three future bills from a backend response.
 
 
-## Troubleshooting: "2 validation errors for Bill"
+## Current Nessie bill API limitation and safe fallback
 
-Earlier versions created a rent bill without `recurring_date` and
-`upcoming_payment_date`. The current seed script supplies both fields and
-tries to repair that specific existing rent bill by its ID from
-`backend/seed_manifest.json` before listing bills.
+**Observed October 17:** An incomplete Rent bill was created in the sandbox. `PUT /bills/{id}`
+rejects `upcoming_payment_date` as an extra field, while `GET /bills/{id}`
+requires it, even after a PUT supplying `recurring_date`. This is an
+incompatible read/write validation behavior; we cannot repair it reliably
+from the documented REST API.
 
-1. Keep the original `seed_manifest.json`. Do **not** delete or reset it.
-2. Run `git pull origin main`.
-3. Run `python backend\\scripts\\seed_nessie.py --apply` in PowerShell.
-4. If successful, run `python backend\\scripts\\seed_nessie.py --verify`.
+To prevent more malformed bills or accidental deletion, the seed script now:
+- Reuses the 2 customers, 6 accounts and 3 merchants already created in Nessie.
+- Stores **all three planned bills locally in** `backend/seed_manifest.json`
+  at `app_bills`; each has `source: app_simulation` and an expected date.
+- Preserves the malformed rent record without deleting it.
+- Reports `APP-ONLY OK` for the local bills during `--verify` and explicitly
+  reports the old Nessie bill as `UNREADABLE`.
+- Never claims the simulated bills were persisted successfully in Nessie.
 
-The updated script also recognizes when the previous seeder accidentally
-assigned Sarah's ID to Jamie; it verifies the customer name and creates a
-distinct partner customer if necessary.
+In the app backend, the bill forecast should temporarily read
+`seed_manifest.json["app_bills"]`, rather than Nessie `GET /bills`.
+This keeps the **Nessie integration real for accounts**, while avoiding
+misrepresenting the bill source. Once the Nessie API is corrected, bills can
+be migrated into the sandbox and the fallback removed.
 
-If the old rent bill is still unreadable after the update request, **stop**.
-The API may be ignoring required read fields on write; do not repeatedly
-insert new bills or manually delete records without checking the returned
-bill ID and the contents of your local manifest.
-
-A successful GitHub commit does not insert/repair Nessie data: the script
-must be run locally with your private key.
-
-
-## Fix: BillUpdate rejects upcoming_payment_date
-
-Nessie returned an error because `upcoming_payment_date` is *read-only* in
-the BillUpdate schema. Our corrected script NEVER sends that field in POST/PUT;
-it supplies `recurring_date` and `payment_date`, and tries a PUT on the one
-incomplete rent bill previously created.
-
-Run from the repository root:
+### Run now
 
 ```powershell
 git pull origin main
@@ -112,12 +103,6 @@ python backend\scripts\seed_nessie.py --apply
 python backend\scripts\seed_nessie.py --verify
 ```
 
-Do not delete `backend/seed_manifest.json`.
-
-If the script says **the old bill is still unreadable**, the sandbox's
-read/write models may be inconsistent. It will give you an optional controlled
-repair, `python backend\scripts\seed_nessie.py --apply --repair-bills`, which
-**deletes and recreates only the already-recorded malformed demo bill**.
-This is NOT automatic; review the warning first. If a newly created bill still
-fails validation, stop and use the app's separate simulated-bill table for the
-hackathon forecast while keeping Nessie for customer/accounts.
+Do **not** run the old `--repair-bills` command: it is intentionally disabled
+to avoid deleting a known bill when Nessie's read/write models disagree.
+Keep your original `seed_manifest.json`; never share `backend/.env` or the API key.
