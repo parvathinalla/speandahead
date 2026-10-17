@@ -24,9 +24,9 @@ Do not push the real `.env`, and rotate a key that has already been exposed in c
 ## 2. Preview then insert
 
 ```powershell
-py backend\scripts\seed_nessie.py
-py backend\scripts\seed_nessie.py --apply
-py backend\scripts\seed_nessie.py --verify
+python backend\scripts\seed_nessie.py
+python backend\scripts\seed_nessie.py --apply
+python backend\scripts\seed_nessie.py --verify
 ```
 
 **Only `--apply` inserts data**. The default command previews the data without contacting Nessie. On success, the script writes `backend/seed_manifest.json` with the real sandbox IDs. This file is deliberately Git-ignored and can be shared directly with teammates if they use the same sandbox; it contains no API key.
@@ -95,3 +95,29 @@ bill ID and the contents of your local manifest.
 
 A successful GitHub commit does not insert/repair Nessie data: the script
 must be run locally with your private key.
+
+
+## Fix: BillUpdate rejects upcoming_payment_date
+
+Nessie returned an error because `upcoming_payment_date` is *read-only* in
+the BillUpdate schema. Our corrected script NEVER sends that field in POST/PUT;
+it supplies `recurring_date` and `payment_date`, and tries a PUT on the one
+incomplete rent bill previously created.
+
+Run from the repository root:
+
+```powershell
+git pull origin main
+python backend\scripts\seed_nessie.py --apply
+python backend\scripts\seed_nessie.py --verify
+```
+
+Do not delete `backend/seed_manifest.json`.
+
+If the script says **the old bill is still unreadable**, the sandbox's
+read/write models may be inconsistent. It will give you an optional controlled
+repair, `python backend\scripts\seed_nessie.py --apply --repair-bills`, which
+**deletes and recreates only the already-recorded malformed demo bill**.
+This is NOT automatic; review the warning first. If a newly created bill still
+fails validation, stop and use the app's separate simulated-bill table for the
+hackathon forecast while keeping Nessie for customer/accounts.
