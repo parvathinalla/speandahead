@@ -1,298 +1,162 @@
 import 'package:flutter/material.dart';
 import '../theme/app_theme.dart';
+import '../services/api_service.dart';
 
 class CardsScreen extends StatefulWidget {
   final Function(int)? onNavigateTab;
   const CardsScreen({super.key, this.onNavigateTab});
-
   @override
   State<CardsScreen> createState() => _CardsScreenState();
 }
 
 class _CardsScreenState extends State<CardsScreen> {
-  int selectedCard = 1; // Savor One is recommended (Index 1)
+  final amountController = TextEditingController(text: '120');
+  String category = 'groceries';
+  bool loading = true;
+  Map<String, dynamic>? result;
+  String? error;
+
+  @override
+  void initState() {
+    super.initState();
+    evaluate();
+  }
+
+  @override
+  void dispose() {
+    amountController.dispose();
+    super.dispose();
+  }
+
+  double get price => double.tryParse(amountController.text) ?? 0;
+  String dollars(dynamic v) => '\$' + (double.tryParse(v.toString()) ?? 0).toStringAsFixed(2);
+
+  Future<void> evaluate() async {
+    if (price <= 0) {
+      setState(() => error = 'Enter a purchase amount greater than zero.');
+      return;
+    }
+    setState(() { loading = true; error = null; });
+    try {
+      final response = await ApiService.evaluateCards(
+        amount: price, category: category, merchant: 'Demo merchant');
+      if (mounted) setState(() { result = response; loading = false; });
+    } catch (e) {
+      if (mounted) setState(() { error = e.toString(); loading = false; });
+    }
+  }
+
+  Future<void> simulate() async {
+    try {
+      final response = await ApiService.simulatePurchase(
+          amount: price, category: category, emergencyCost: 1000);
+      if (!mounted) return;
+      final card = (response['recommended_card'] as Map?) ?? {};
+      final cash = (response['cashflow_before_purchase'] as Map?) ?? {};
+      final emergency = (response['emergency_stress_test'] as Map?) ?? {};
+      showDialog<void>(context: context, builder: (ctx) => AlertDialog(
+        title: const Text('Financial Decision Preview'),
+        content: Text(
+          'Recommended: ' + card['card_name'].toString() +
+          '\nUpcoming bills: ' + dollars(cash['total_bills_due']) +
+          '\nChecking shortage: ' + dollars(cash['shortfall_amount']) +
+          '\nEmergency funding gap: ' + dollars(emergency['potential_gap']) +
+          '\n\nNo money or credit was moved.'),
+        actions: [TextButton(onPressed: () => Navigator.pop(ctx),
+            child: const Text('Close'))],
+      ));
+    } catch (e) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(e.toString())));
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      body: SafeArea(
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.all(16),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              // Header
-              Row(
-                children: [
-                  Container(
-                    width: 40,
-                    height: 40,
-                    decoration: BoxDecoration(
-                      color: AppTheme.brandBlueLight,
-                      borderRadius: BorderRadius.circular(10),
-                    ),
-                    child: const Icon(Icons.credit_card, color: AppTheme.brandBlue),
-                  ),
-                  const SizedBox(width: 12),
-                  const Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          "Best Card for This Purchase",
-                          style: TextStyle(fontSize: 17, fontWeight: FontWeight.w800, color: AppTheme.brandNavy),
-                        ),
-                        Text(
-                          "Get the most rewards while keeping utilization healthy.",
-                          style: TextStyle(fontSize: 11, color: AppTheme.textSecondary),
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 16),
+    final cardList = (result?['cards'] as List?) ?? [];
+    final best = (result?['recommended_card'] as Map?) ?? {};
 
-              // Purchase Simulator
-              Card(
-                child: Padding(
-                  padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-                  child: Row(
-                    children: [
-                      const Icon(Icons.shopping_cart, color: AppTheme.brandNavy, size: 24),
-                      const SizedBox(width: 12),
-                      const Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text("Groceries at Whole Foods", style: TextStyle(fontSize: 11, color: AppTheme.textMuted, fontWeight: FontWeight.w600)),
-                            Text("\$120", style: TextStyle(fontSize: 20, fontWeight: FontWeight.w900, color: AppTheme.brandNavy)),
-                          ],
-                        ),
-                      ),
-                      Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                        decoration: BoxDecoration(color: AppTheme.brandBlueLight, borderRadius: BorderRadius.circular(12)),
-                        child: const Text("Edit", style: TextStyle(fontSize: 11, fontWeight: FontWeight.w700, color: AppTheme.brandBlue)),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-              const SizedBox(height: 14),
-
-              const Text("Card Options", style: TextStyle(fontSize: 12, fontWeight: FontWeight.w800, color: AppTheme.textSecondary)),
-              const SizedBox(height: 8),
-
-              // Card 1: Venture Rewards (High utilization)
-              _buildCardOption(
-                index: 0,
-                name: "Venture Rewards •••• 1234",
-                themeNavy: true,
-                rewardRate: "3%",
-                utilization: "78%",
-                statusLabel: "High utilization",
-                isRed: true,
-              ),
-              const SizedBox(height: 10),
-
-              // Card 2: Savor One (Healthy range)
-              _buildCardOption(
-                index: 1,
-                name: "Savor One •••• 5678",
-                themeNavy: false,
-                rewardRate: "2%",
-                utilization: "25%",
-                statusLabel: "Healthy range",
-                isRed: false,
-              ),
-              const SizedBox(height: 14),
-
-              // AI Recommendation Card
-              Container(
-                padding: const EdgeInsets.all(14),
-                decoration: BoxDecoration(
-                  color: AppTheme.brandBlueLight,
-                  borderRadius: BorderRadius.circular(14),
-                  border: Border.all(color: const Color(0xFFBFDBFE)),
-                ),
-                child: const Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Icon(Icons.lightbulb, color: AppTheme.brandBlue, size: 22),
-                    SizedBox(width: 10),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text("Recommended", style: TextStyle(fontSize: 10, fontWeight: FontWeight.w800, color: AppTheme.brandBlue)),
-                          SizedBox(height: 2),
-                          Text("Choose Card B (Savor One)", style: TextStyle(fontSize: 14, fontWeight: FontWeight.w800, color: AppTheme.brandNavy)),
-                          SizedBox(height: 4),
-                          Text(
-                            "You'll still earn 2% rewards and keep your utilization low, which can help your overall credit health over time.",
-                            style: TextStyle(fontSize: 11, color: AppTheme.textSecondary, height: 1.35),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              const SizedBox(height: 16),
-
-              SizedBox(
-                width: double.infinity,
-                child: ElevatedButton(
-                  onPressed: () {
-                    ScaffoldMessenger.of(context).showSnackBar(
-                      const SnackBar(content: Text("Selected Savor One for \$120 Whole Foods grocery purchase!")),
-                    );
-                  },
-                  child: const Text("Choose Card B"),
-                ),
-              ),
-              const SizedBox(height: 8),
-
-              SizedBox(
-                width: double.infinity,
-                child: OutlinedButton(
-                  onPressed: () {
-                    // Navigate to AutoPay screen
-                    if (widget.onNavigateTab != null) {
-                      widget.onNavigateTab!(2); // Tab index 2 is AutoPay
-                    }
-                  },
-                  child: const Text("Pay down \$200 first"),
-                ),
-              ),
-              const SizedBox(height: 8),
-              const Center(
-                child: Text(
-                  "This is a suggestion only. We do not guarantee any change to your credit score.",
-                  style: TextStyle(fontSize: 10, color: AppTheme.textMuted),
-                  textAlign: TextAlign.center,
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildCardOption({
-    required int index,
-    required String name,
-    required bool themeNavy,
-    required String rewardRate,
-    required String utilization,
-    required String statusLabel,
-    required bool isRed,
-  }) {
-    final isSelected = selectedCard == index;
-    return GestureDetector(
-      onTap: () => setState(() => selectedCard = index),
-      child: Row(
-        children: [
-          Container(
-            width: 18,
-            height: 18,
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              border: Border.all(
-                color: isSelected ? AppTheme.brandBlue : AppTheme.borderSubtle,
-                width: 2,
-              ),
-            ),
-            child: isSelected
-                ? Center(
-                    child: Container(
-                      width: 10,
-                      height: 10,
-                      decoration: const BoxDecoration(
-                        shape: BoxShape.circle,
-                        color: AppTheme.brandBlue,
-                      ),
-                    ),
-                  )
-                : null,
-          ),
-          const SizedBox(width: 10),
-          Expanded(
-            child: Container(
-              padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                gradient: LinearGradient(
-                  colors: themeNavy
-                      ? [const Color(0xFF07284C), const Color(0xFF13467D)]
-                      : [const Color(0xFFF8FAFC), const Color(0xFFE2E8F0)],
-                ),
-                borderRadius: BorderRadius.circular(14),
-                border: themeNavy ? null : Border.all(color: AppTheme.borderSubtle),
-              ),
-              child: Column(
-                children: [
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                    children: [
-                      Text(name, style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: themeNavy ? Colors.white : AppTheme.brandNavy)),
-                      Text("VISA", style: TextStyle(fontSize: 12, fontWeight: FontWeight.w900, color: themeNavy ? Colors.white : AppTheme.brandNavy)),
-                    ],
-                  ),
-                  const SizedBox(height: 10),
-                  Container(
-                    padding: const EdgeInsets.all(8),
-                    decoration: BoxDecoration(
-                      color: Colors.white,
-                      borderRadius: BorderRadius.circular(8),
-                    ),
-                    child: Row(
-                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                      children: [
-                        Row(
-                          children: [
-                            const Icon(Icons.card_giftcard, size: 16, color: AppTheme.brandNavy),
-                            const SizedBox(width: 6),
-                            Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                Text(rewardRate, style: const TextStyle(fontSize: 14, fontWeight: FontWeight.w800, color: AppTheme.brandNavy)),
-                                const Text("Rewards on groceries", style: TextStyle(fontSize: 9, color: AppTheme.textMuted)),
-                              ],
-                            ),
-                          ],
-                        ),
-                        Row(
-                          children: [
-                            Column(
-                              crossAxisAlignment: CrossAxisAlignment.end,
-                              children: [
-                                Text(utilization, style: TextStyle(fontSize: 14, fontWeight: FontWeight.w800, color: isRed ? AppTheme.riskRed : AppTheme.successGreen)),
-                                Container(
-                                  padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
-                                  decoration: BoxDecoration(
-                                    color: isRed ? AppTheme.riskRedBg : AppTheme.successGreenBg,
-                                    borderRadius: BorderRadius.circular(4),
-                                  ),
-                                  child: Text(
-                                    statusLabel,
-                                    style: TextStyle(fontSize: 8, fontWeight: FontWeight.w700, color: isRed ? AppTheme.riskRedText : AppTheme.successGreenText),
-                                  ),
-                                ),
-                              ],
-                            ),
-                          ],
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
-              ),
-            ),
-          ),
+    return Scaffold(body: SafeArea(child: ListView(
+      padding: const EdgeInsets.all(16), children: [
+        const Text('Best Card for This Purchase', style: TextStyle(
+            fontSize: 21, fontWeight: FontWeight.w800, color: AppTheme.brandNavy)),
+        const SizedBox(height: 4),
+        const Text('Rewards and credit utilization together. Sandbox estimates only.',
+            style: TextStyle(fontSize: 11, color: AppTheme.textSecondary)),
+        const SizedBox(height: 14),
+        Card(child: Padding(padding: const EdgeInsets.all(14),
+          child: Column(children: [
+            TextField(controller: amountController,
+              keyboardType: const TextInputType.numberWithOptions(decimal: true),
+              decoration: const InputDecoration(
+                labelText: 'Purchase amount (USD)', prefixIcon: Icon(Icons.shopping_cart))),
+            const SizedBox(height: 10),
+            DropdownButtonFormField<String>(
+              value: category,
+              decoration: const InputDecoration(labelText: 'Merchant category'),
+              items: const [
+                DropdownMenuItem(value: 'groceries', child: Text('Groceries')),
+                DropdownMenuItem(value: 'gas', child: Text('Gas')),
+                DropdownMenuItem(value: 'dining', child: Text('Dining')),
+                DropdownMenuItem(value: 'other', child: Text('Other')),
+              ],
+              onChanged: (v) { if (v != null) setState(() => category = v); }),
+            const SizedBox(height: 12),
+            SizedBox(width: double.infinity,
+              child: ElevatedButton(onPressed: evaluate,
+                child: const Text('Find Best Card'))),
+          ]))),
+        const SizedBox(height: 10),
+        if (loading) const Center(child: CircularProgressIndicator()),
+        if (error != null) Card(child: Padding(padding: const EdgeInsets.all(14),
+          child: Column(children: [
+            Text(error!, style: const TextStyle(color: AppTheme.riskRed)),
+            TextButton(onPressed: evaluate, child: const Text('Retry')),
+          ]))),
+        if (!loading && result != null) ...[
+          Card(color: AppTheme.brandBlueLight,
+            child: Padding(padding: const EdgeInsets.all(16),
+              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                const Text('Recommended option', style: TextStyle(
+                    fontSize: 12, fontWeight: FontWeight.w600)),
+                Text(best.isEmpty ? 'No card has enough available credit'
+                                  : best['card_name'].toString().toUpperCase(),
+                    style: const TextStyle(color: AppTheme.brandNavy,
+                        fontWeight: FontWeight.w900, fontSize: 21)),
+                if (best.isNotEmpty) Text(
+                  'Rewards: ' + dollars(best['rewards_amount']) +
+                  ' • After-purchase utilization: ' +
+                  best['utilization_after_pct'].toString() + '%'),
+                const SizedBox(height: 6),
+                const Text('Prioritizes available credit and chosen utilization target before rewards.',
+                    style: TextStyle(fontSize: 11, color: AppTheme.textSecondary)),
+              ]))),
+          const SizedBox(height: 10),
+          for (final item in cardList)
+            Card(child: ListTile(
+              leading: const Icon(Icons.credit_card, color: AppTheme.brandBlue),
+              title: Text(item['card_name'].toString().toUpperCase()),
+              subtitle: Text('Current utilization: ' +
+                  item['current_utilization_pct'].toString() +
+                  '% → ' + item['utilization_after_pct'].toString() + '%'),
+              trailing: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
+                Text(dollars(item['rewards_amount']),
+                    style: const TextStyle(fontWeight: FontWeight.w800)),
+                const Text('rewards', style: TextStyle(fontSize: 10)),
+              ]),
+            )),
+          const SizedBox(height: 12),
+          ElevatedButton(onPressed: best.isNotEmpty ? simulate : null,
+            child: const Text('Compare Future Consequences')),
+          const SizedBox(height: 8),
+          TextButton.icon(onPressed: () => widget.onNavigateTab?.call(2),
+            icon: const Icon(Icons.auto_awesome),
+            label: const Text('Plan an Early Utilization Payment')),
+          const Text('No charge is processed. Rewards and credit limits are simulated;'
+                     ' future credit score changes are not guaranteed.',
+              style: TextStyle(fontSize: 11, color: AppTheme.textMuted)),
         ],
-      ),
-    );
+      ],
+    )));
   }
 }
