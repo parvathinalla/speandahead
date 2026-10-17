@@ -15,10 +15,14 @@ class MainShell extends StatefulWidget {
 
 class _MainShellState extends State<MainShell> {
   int _currentIndex = 2; // Start on AutoPay (Flagship screen)
+  // Only mount a screen on its first visit. IndexedStack otherwise starts all
+  // five network requests at once, each previously fetching six Nessie accounts.
+  final Set<int> _visited = {2};
 
   void _onTabTapped(int index) {
     setState(() {
       _currentIndex = index;
+      _visited.add(index);
     });
   }
 
@@ -83,7 +87,10 @@ class _MainShellState extends State<MainShell> {
       ),
       body: IndexedStack(
         index: _currentIndex,
-        children: screens,
+        children: [
+          for (int index = 0; index < screens.length; index++)
+            _visited.contains(index) ? screens[index] : const SizedBox.shrink(),
+        ],
       ),
       bottomNavigationBar: BottomNavigationBar(
         currentIndex: _currentIndex,
