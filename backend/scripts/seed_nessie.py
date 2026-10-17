@@ -57,6 +57,9 @@ class Nessie:
     def post(self, path, body):
         return self.request("POST", path, body)
 
+    def put(self, path, body):
+        return self.request("PUT", path, body)
+
 
 def listing(response):
     if isinstance(response, list):
@@ -108,7 +111,7 @@ def build(state):
                "city": "Gainesville", "state": "FL", "zip": "32601"}
     customers = {
         "sarah": {"first_name": "Sarah", "last_name": "Demo" + state["seed_id"], "address": address},
-        "jamie": {"first_name": "Jamie", "last_name": "Demo" + state["seed_id"], "address": address}}
+        "jamie": {"first_name": "Jamie", "last_name": "Partner" + state["seed_id"], "address": address}}
     accounts = {
         "checking": ("sarah", "Checking", 500),
         "savings": ("sarah", "Savings", 1200),
@@ -154,10 +157,29 @@ def run(apply=False, verify=False):
         return
 
     save(state)  # preserve seed ID even if a later request fails
+    # The original seeder accidentally matched Sarah and Jamie by the same last name.
+    # Repair saved references against Nessie before creating other records.
+    stored_customers = state.setdefault("ids", {}).setdefault("customers", {})
+    for name, expected in customers.items():
+        old_id = stored_customers.get(name)
+        if not old_id:
+            continue
+        found = api.get("/customers/" + old_id)
+        if found.get("first_name") != expected["first_name"]:
+            print("REPAIR customer reference:", name, "did not match saved customer")
+            stored_customers.pop(name)
+            save(state)
     for name, value in customers.items():
         upsert(api, state, "customers", name, "/customers", "/customers", value, "last_name")
     for name, (owner, kind, amount) in accounts.items():
         owner_id = state["ids"]["customers"][owner]
+        saved_account = state.setdefault("ids", {}).setdefault("accounts", {}).get(name)
+        if saved_account:
+            account = api.get("/accounts/" + saved_account)
+            if account.get("customer_id") and account["customer_id"] != owner_id:
+                print("REPAIR account reference:", name, "belongs to another customer")
+                state["ids"]["accounts"].pop(name)
+                save(state)
         path = "/customers/" + owner_id + "/accounts"
         payload = {"type": kind, "nickname": tag + "-" + name,
                    "rewards": 0, "balance": amount}
@@ -167,11 +189,42 @@ def run(apply=False, verify=False):
     check_id = state["ids"]["accounts"]["checking"]
     bill_path = "/accounts/" + check_id + "/bills"
     for name, (payee, amount, days) in bills.items():
+        due = start + timedelta(days=days)
         payload = {"status": "pending", "payee": payee,
                    "nickname": tag + "-" + name,
-                   "payment_date": (start + timedelta(days=days)).isoformat(),
+                   "payment_date": due.isoformat(),
+                   "recurring_date": due.day,
+                   "upcoming_payment_date": due.isoformat(),
                    "payment_amount": amount}
+        existing_id = state.get("ids", {}).get("bills", {}).get(name)
+        if existing_id:
+            # The old script posted an incomplete rent bill. GET collection then fails.
+            # Update it directly by saved ID before attempting to list bills.
+            try:
+                api.get("/bills/" + existing_id)
+            except RuntimeError as error:
+                if "validation errors for Bill" not in str(error):
+                    raise
+                print("REPAIR existing incomplete bill:", name)
+                api.put("/bills/" + existing_id, payload)
+                try:
+                    api.get("/bills/" + existing_id)
+                except RuntimeError as repair_error:
+                    raise RuntimeError(
+                        "Nessie cannot read the existing malformed " + name +
+                        " bill after PUT. The sandbox may be ignoring the new date "
+                        "fields. Do not reseed or delete it blindly. Inspect bill " +
+                        existing_id + " in Nessie; error: " + str(repair_error)
+                    ) from None
         upsert(api, state, "bills", name, bill_path, bill_path, payload, "nickname")
+        # New records must also be readable; otherwise stop before creating more.
+        try:
+            api.get("/bills/" + state["ids"]["bills"][name])
+        except RuntimeError as read_error:
+            raise RuntimeError(
+                "Nessie created " + name + " but cannot read it. "
+                "Stop seeding and inspect bill data: " + str(read_error)
+            ) from None
 
     ids = state["ids"]
     state["app_scenario"] = {
