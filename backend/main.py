@@ -152,6 +152,7 @@ def me(user=Depends(actor)):
     linked = has_linked_sandbox(user)
     return {"authenticated": True, "user_id": user,
             "sandbox_linked": linked, "onboarding_required": not linked,
+            "security_mode": AUTH_MODE,
             "data_source": "fictional_nessie_sandbox"}
 
 
