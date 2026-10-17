@@ -96,7 +96,15 @@ async def actor(authorization: Optional[str] = Header(None),
         claims = jwt.decode(token, signing_key.key, algorithms=["RS256"],
                             audience=audience, issuer="https://" + domain + "/",
                             options={"require": ["exp", "iss", "sub"]})
-        return str(claims["sub"])
+        subject = str(claims["sub"])
+        allowed = {x.strip() for x in os.getenv("AUTH0_ALLOWED_SUBS", "").split(",") if x.strip()}
+        if not allowed:
+            raise HTTPException(503, "Set AUTH0_ALLOWED_SUBS for this fictional demo sandbox")
+        if subject not in allowed:
+            raise HTTPException(403, "This authenticated user is not enrolled in the demo")
+        return subject
+    except HTTPException:
+        raise
     except Exception:
         raise HTTPException(401, "Invalid or expired authentication token") from None
 
@@ -470,6 +478,8 @@ async def execute_transfer(body: TransferRequest, request: Request, user=Depends
     if PAYMENT_MODE == "simulate":
         outcome = "simulated_only"
     else:
+        if user != os.getenv("NESSIE_TRANSFER_ALLOWED_SUB", ""):
+            raise HTTPException(403, "Sandbox transfer execution not authorized for this user")
         try:
             m = manifest()
             ids = m["ids"]["accounts"]
