@@ -17,21 +17,22 @@ class ApiService {
   static String baseUrl = const String.fromEnvironment(
     'API_BASE_URL', defaultValue: 'http://127.0.0.1:8000');
 
-  /// Set after Auth0 login. Demo backend mode requires no bearer token.
-  static String? bearerToken;
-
-  static Map<String, String> get _headers => {
-        'Content-Type': 'application/json',
-        if (bearerToken != null && bearerToken!.isNotEmpty)
-          'Authorization': 'Bearer $bearerToken',
-      };
+  // Auth0 SDK securely manages the session. Always retrieve a fresh access
+  // token; do not persist or copy long-lived credentials into Flutter state.
+  static Future<String?> Function()? tokenProvider;
 
   static Future<Map<String, dynamic>> _request(
       String method, String path, [Map<String, dynamic>? body,
         Map<String, String>? extraHeaders]) async {
     try {
       final uri = Uri.parse('$baseUrl$path');
-      final headers = {..._headers, if (extraHeaders != null) ...extraHeaders};
+      final accessToken = await tokenProvider?.call();
+      final headers = <String, String>{
+        'Content-Type': 'application/json',
+        if (accessToken != null && accessToken.isNotEmpty)
+          'Authorization': 'Bearer $accessToken',
+        if (extraHeaders != null) ...extraHeaders,
+      };
       final response = method == 'GET'
           ? await http.get(uri, headers: headers).timeout(const Duration(seconds: 30))
           : await http.post(uri, headers: headers, body: jsonEncode(body ?? {}))
@@ -67,6 +68,9 @@ class ApiService {
 
   static Future<Map<String, dynamic>> health() =>
       _request('GET', '/health');
+
+  static Future<Map<String, dynamic>> me() =>
+      _request('GET', '/api/me');
 
   static Future<Map<String, dynamic>> getDashboard() =>
       _request('GET', '/api/dashboard');
