@@ -244,6 +244,9 @@ class AutopayRequest(BaseModel):
     account: str = Field("card_a", pattern="^(card_a|card_b)$")
     safety_buffer: float = Field(100, ge=0)
     horizon_days: int = Field(14, ge=1, le=60)
+    assumed_savings_transfer: float = Field(
+        0, ge=0, description="What-if funding transfer; no money moves")
+    savings_reserve: float = Field(200, ge=0)
 
 
 async def calculate_autopay(body, g):
@@ -253,10 +256,18 @@ async def calculate_autopay(body, g):
     rule = card_rules(m, a)[body.account]
     x = m["app_scenario"][body.account]
     statement = (date.today() + timedelta(days=int(x.get("statement_closes_in_days", 9)))).isoformat()
+    transfer = money(body.assumed_savings_transfer)
+    remaining_savings = money(account_amount(a["savings"])) - transfer
+    if remaining_savings < money(body.savings_reserve):
+        raise HTTPException(409, "What-if savings transfer would violate protected savings reserve")
+    checking_for_plan = money(account_amount(a["checking"])) + transfer
     result = autopay_preview(rule["balance"], rule["credit_limit"],
                              body.target_utilization_pct,
-                             account_amount(a["checking"]), f["total_bills_due"],
+                             checking_for_plan, f["total_bills_due"],
                              body.safety_buffer, statement)
+    result["assumed_savings_transfer"] = amount(transfer)
+    result["savings_after_assumed_transfer"] = amount(remaining_savings)
+    result["is_what_if_scenario"] = transfer > 0
     result["account"] = body.account
     result["data_sources"] = {"balances": "nessie_sandbox",
                               "credit_limit_and_statement": "local_app_simulation"}
@@ -394,6 +405,8 @@ def joint_decision(proposal_id: str, body: JointDecision, user=Depends(actor)):
             raise HTTPException(404, "Unknown proposal")
         if row["owner"] == user:
             raise HTTPException(403, "Initiator cannot approve their own joint proposal")
+        if AUTH_MODE == "auth0" and user != os.getenv("JOINT_PARTNER_SUB", ""):
+            raise HTTPException(403, "Authenticated user is not the configured partner")
         if row["status"] != "awaiting_partner":
             raise HTTPException(409, "Proposal already decided")
         # In demo mode the second demo identity models partner consent; real ownership
