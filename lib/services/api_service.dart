@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'package:http/http.dart' as http;
 
@@ -32,9 +33,9 @@ class ApiService {
       final uri = Uri.parse('$baseUrl$path');
       final headers = {..._headers, if (extraHeaders != null) ...extraHeaders};
       final response = method == 'GET'
-          ? await http.get(uri, headers: headers).timeout(const Duration(seconds: 15))
+          ? await http.get(uri, headers: headers).timeout(const Duration(seconds: 30))
           : await http.post(uri, headers: headers, body: jsonEncode(body ?? {}))
-              .timeout(const Duration(seconds: 15));
+              .timeout(const Duration(seconds: 30));
       Map<String, dynamic> payload;
       try {
         payload = jsonDecode(response.body) as Map<String, dynamic>;
@@ -50,10 +51,17 @@ class ApiService {
       }
       return payload;
     } on ApiException {
-      rethrow;
-    } catch (_) {
-      throw ApiException('Cannot connect to backend at $baseUrl. '
-          'Check that FastAPI is running.');
+      rethrow; // Preserve backend HTTP status such as 503.
+    } on TimeoutException {
+      throw ApiException('Backend took too long at $baseUrl. '
+          'Nessie may be temporarily slow. Tap Retry.');
+    } on http.ClientException {
+      throw ApiException('Browser could not reach $baseUrl. '
+          'Open $baseUrl/health in Chrome. If /health works, '
+          'check CORS_ORIGINS in backend/.env.');
+    } catch (error) {
+      throw ApiException('Unexpected API error ($error). '
+          'See Chrome developer tools and FastAPI terminal.');
     }
   }
 
