@@ -451,6 +451,8 @@ async def preview_transfer(body: TransferRequest, request: Request, user=Depends
 async def execute_transfer(body: TransferRequest, request: Request, user=Depends(actor)):
     if not body.confirmed:
         raise HTTPException(400, "User must explicitly confirm this transfer")
+    if PAYMENT_MODE == "nessie" and user != os.getenv("NESSIE_TRANSFER_ALLOWED_SUB", ""):
+        raise HTTPException(403, "Sandbox transfer execution not authorized for this user")
     # A unique idempotency key is reserved before any Nessie write; unknown outcomes
     # never auto-retry. A reconciliation process is needed for production.
     connection = db()
@@ -478,8 +480,6 @@ async def execute_transfer(body: TransferRequest, request: Request, user=Depends
     if PAYMENT_MODE == "simulate":
         outcome = "simulated_only"
     else:
-        if user != os.getenv("NESSIE_TRANSFER_ALLOWED_SUB", ""):
-            raise HTTPException(403, "Sandbox transfer execution not authorized for this user")
         try:
             m = manifest()
             ids = m["ids"]["accounts"]
