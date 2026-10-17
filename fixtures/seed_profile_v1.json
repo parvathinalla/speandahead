@@ -1,0 +1,39 @@
+{
+  "schema_version": 1,
+  "description": "Simulated deterministic scenarios. IDs are local placeholders, not Nessie IDs. Scenario overrides replace entire fields; they are not additive.",
+  "common": {
+    "snapshot_id": "demo_2026_10_17",
+    "captured_at": "2026-10-17T15:00:00+00:00",
+    "evaluated_at": "2026-10-17T15:00:00+00:00",
+    "source_flags": ["fixture_accounts", "fixture_bills", "fixture_card_profile", "fixture_rewards"],
+    "checking": [{"id": "checking_demo_1", "available_cents": 45000, "source": "fixture"}],
+    "savings": [{"id": "savings_demo_1", "available_cents": 80000, "reserve_cents": 10000, "source": "fixture"}],
+    "bills": [{"id": "rent", "account_id": "checking_demo_1", "due_on": "2026-10-21", "amount_cents": 62000, "source": "fixture"}],
+    "cards": [
+      {"id": "card_demo_1", "limit_cents": 100000, "balance_cents": 75000, "close_estimate": "2026-10-23", "rules": [{"category": "groceries", "rate_bps": 300}, {"category": "*", "rate_bps": 100}], "source": "fixture"},
+      {"id": "card_demo_2", "limit_cents": 200000, "balance_cents": 50000, "close_estimate": "2026-10-24", "rules": [{"category": "groceries", "rate_bps": 200}, {"category": "*", "rate_bps": 100}], "source": "fixture"}
+    ],
+    "joint_memberships": [{"account_id": "checking_demo_1", "user_ids": ["demo_actor", "demo_partner"]}],
+    "joint_history": [
+      {"account_id": "checking_demo_1", "payee": "known_payee", "amount_cents": 10000},
+      {"account_id": "checking_demo_1", "payee": "known_payee", "amount_cents": 20000}
+    ]
+  },
+  "scenarios": {
+    "bills": {"snapshot_id": "demo_bills"},
+    "cards": {"snapshot_id": "demo_cards"},
+    "joint": {"snapshot_id": "demo_joint"},
+    "autopay": {
+      "snapshot_id": "demo_autopay",
+      "checking": [{"id": "checking_demo_1", "available_cents": 60000, "source": "fixture"}],
+      "bills": [{"id": "utilities", "account_id": "checking_demo_1", "due_on": "2026-10-21", "amount_cents": 25000, "source": "fixture"}],
+      "safety_buffer_cents": 10000
+    },
+    "emergency": {
+      "snapshot_id": "demo_emergency",
+      "checking": [{"id": "checking_demo_1", "available_cents": 120000, "source": "fixture"}],
+      "savings": [{"id": "savings_demo_1", "available_cents": 80000, "reserve_cents": 0, "source": "fixture"}],
+      "bills": [{"id": "protected", "account_id": "checking_demo_1", "due_on": "2026-10-21", "amount_cents": 120000, "source": "fixture"}]
+    }
+  }
+}
