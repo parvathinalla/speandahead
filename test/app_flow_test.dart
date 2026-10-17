@@ -1,7 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:creditpilot_mobile/core/auth/auth_service.dart';
-import 'package:creditpilot_mobile/app/providers/app_state.dart';
 import 'package:creditpilot_mobile/core/fixtures/typed_fixtures.dart';
 import 'package:creditpilot_mobile/shared/status_badge.dart';
 import 'package:creditpilot_mobile/shared/debounced_button.dart';
@@ -27,7 +26,7 @@ void main() {
   });
 
   group('Typed Fixtures & Mathematical Accuracy', () {
-    test('T01: Bill shortfall calculation ($450 - $620 = -$170)', () {
+    test(r'T01: Bill shortfall calculation ($450 - $620 = -$170)', () {
       final forecast = TypedFixtures.getBillForecast();
       expect(forecast["checking_balance"], 450.0);
       expect(forecast["total_bills_due"], 620.0);
@@ -36,7 +35,7 @@ void main() {
       expect(forecast["is_shortfall"], isTrue);
     });
 
-    test('T04/T05: Card recommendation $120 Whole Foods ($3.60 vs $2.40)', () {
+    test(r'T04/T05: Card recommendation $120 Whole Foods ($3.60 vs $2.40)', () {
       final rec = TypedFixtures.getCardRecommendation(amount: 120.0);
       final cards = rec["cards_evaluated"] as List;
       expect(cards.length, 2);
@@ -52,7 +51,7 @@ void main() {
       expect(rec["recommended_card_id"], "card_sav_01");
     });
 
-    test('T10: Emergency readiness ($2,000 - $1,200 - $1,000 = $200 gap)', () {
+    test(r'T10: Emergency readiness ($2,000 - $1,200 - $1,000 = $200 gap)', () {
       final em = TypedFixtures.getEmergencyEvaluation(
         cost: 1000.0,
         checking: 1200.0,
@@ -66,7 +65,7 @@ void main() {
       expect(em["is_gap_present"], isTrue);
     });
 
-    test('T11/T12: AutoPay safe limit ($460 theoretical vs $250 safe -> 29% not reachable)', () {
+    test(r'T11/T12: AutoPay safe limit ($460 theoretical vs $250 safe -> 29% not reachable)', () {
       final ap = TypedFixtures.getAutoPayPreview(targetPct: 29.0);
       expect(ap["theoretical_paydown_amount"], 460.0);
       expect(ap["max_safe_payment_today"], 250.0);
@@ -76,7 +75,7 @@ void main() {
       expect(ap["reason_code"], "TARGET_NOT_AFFORDABLE");
     });
 
-    test('T07: Joint unusual transaction ($850 at Best Buy flags review)', () {
+    test(r'T07: Joint unusual transaction ($850 at Best Buy flags review)', () {
       final joint = TypedFixtures.getJointEvaluation(amount: 850.0);
       expect(joint["amount"], 850.0);
       expect(joint["is_unusual"], isTrue);
