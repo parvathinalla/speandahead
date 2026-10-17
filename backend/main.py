@@ -10,6 +10,7 @@ import json
 import os
 from pathlib import Path
 import sqlite3
+import time
 from typing import Any, Optional
 from uuid import uuid4
 
@@ -110,44 +111,112 @@ async def actor(authorization: Optional[str] = Header(None),
 
 
 class NessieGateway:
+    # Shared per app instance. Five Flutter tabs should not each produce six
+    # simultaneous requests to the Nessie demo sandbox.
+    def __init__(self):
+        self._account_lock = asyncio.Lock()
+        self._read_limit = asyncio.Semaphore(2)
+        self._account_cache = {}
+        self._cache_key = None
+        self._cache_until = 0.0
+
     async def request(self, method: str, path: str, payload=None):
         key = os.getenv("NESSIE_API_KEY", "")
         if not key:
             raise HTTPException(503, "NESSIE_API_KEY missing on backend")
         if not NESSIE_URL.startswith("https://"):
             raise HTTPException(503, "Nessie URL must use HTTPS")
+
+        # Only GET requests are safe to retry. Never retry payment POSTs:
+        # their outcome could already have committed at the sandbox.
+        attempts = 3 if method == "GET" else 1
         try:
-            async with httpx.AsyncClient(timeout=12) as client:
-                response = await client.request(method, NESSIE_URL + path,
-                                                params={"key": key}, json=payload)
-                response.raise_for_status()
-                if not response.content:
-                    return {}
-                return response.json()
-        except httpx.HTTPStatusError as exc:
-            # Do not leak Nessie URLs: the key is in their query strings.
-            raise HTTPException(502, "Nessie returned HTTP " + str(exc.response.status_code)) from None
-        except (httpx.RequestError, ValueError):
-            raise HTTPException(502, "Nessie service unavailable or invalid response") from None
+            async with httpx.AsyncClient(timeout=8) as client:
+                for attempt in range(attempts):
+                    try:
+                        response = await client.request(
+                            method, NESSIE_URL + path,
+                            params={"key": key}, json=payload)
+                        response.raise_for_status()
+                        return response.json() if response.content else {}
+                    except httpx.HTTPStatusError as exc:
+                        status = exc.response.status_code
+                        transient = status in (429, 500, 502, 503, 504)
+                        if method == "GET" and transient and attempt + 1 < attempts:
+                            await asyncio.sleep(0.25 * (attempt + 1))
+                            continue
+                        # Never include request URL or body; Nessie uses key= in URL.
+                        raise HTTPException(
+                            503 if transient else 502,
+                            "Nessie sandbox returned HTTP " + str(status) +
+                            (". Please retry shortly." if transient else ".")
+                        ) from None
+                    except httpx.RequestError:
+                        if method == "GET" and attempt + 1 < attempts:
+                            await asyncio.sleep(0.25 * (attempt + 1))
+                            continue
+                        raise HTTPException(
+                            503, "Nessie sandbox network request failed; try again."
+                        ) from None
+                    except (ValueError, TypeError):
+                        raise HTTPException(
+                            502, "Nessie returned an invalid JSON response"
+                        ) from None
+        except HTTPException:
+            raise
 
     async def account(self, account_id):
-        return await self.request("GET", "/accounts/" + account_id)
+        async with self._read_limit:
+            return await self.request("GET", "/accounts/" + account_id)
+
+    async def account_snapshot(self, ids: dict):
+        # Cache success only; preserve fresh balances after 12 seconds and
+        # invalidate immediately if this backend executes a sandbox transfer.
+        names = ("checking", "savings", "card_a", "card_b", "joint_demo", "partner_checking")
+        fingerprint = tuple((name, ids[name]) for name in names)
+        if self._cache_key == fingerprint and time.monotonic() < self._cache_until:
+            return {name: dict(record) for name, record in self._account_cache.items()}
+
+        # Singleflight: concurrent Flutter screens await the same Nessie reads.
+        async with self._account_lock:
+            if self._cache_key == fingerprint and time.monotonic() < self._cache_until:
+                return {name: dict(record) for name, record in self._account_cache.items()}
+
+            responses = await asyncio.gather(*(self.account(ids[name]) for name in names))
+            snapshot = dict(zip(names, responses))
+            for name, record in snapshot.items():
+                if not isinstance(record, dict) or record.get("_id") != ids[name]:
+                    raise HTTPException(502, "Nessie returned a mismatched account ID")
+            self._account_cache = snapshot
+            self._cache_key = fingerprint
+            self._cache_until = time.monotonic() + 12
+            return {name: dict(record) for name, record in snapshot.items()}
 
     async def transfer(self, payer_id, payee_id, value):
-        return await self.request("POST", "/accounts/" + payer_id + "/transfers",
-                                  {"medium": "balance", "payee_id": payee_id,
-                                   "amount": value, "transaction_date": date.today().isoformat(),
-                                   "description": "CreditPilot user-approved sandbox transfer"})
+        result = await self.request(
+            "POST", "/accounts/" + payer_id + "/transfers",
+            {"medium": "balance", "payee_id": payee_id,
+             "amount": value, "transaction_date": date.today().isoformat(),
+             "description": "CreditPilot user-approved sandbox transfer"})
+        self._cache_until = 0.0
+        return result
 
 
 def gateway(request: Request):
-    return getattr(request.app.state, "nessie", None) or NessieGateway()
+    current = getattr(request.app.state, "nessie", None)
+    if current is None:
+        current = NessieGateway()
+        request.app.state.nessie = current
+    return current
 
 
 async def accounts(g: NessieGateway, m: dict) -> dict:
     ids = m["ids"]["accounts"]
-    names = ["checking", "savings", "card_a", "card_b", "joint_demo", "partner_checking"]
-    records = await asyncio.gather(*(g.account(ids[n]) for n in names))
+    if isinstance(g, NessieGateway):
+        return await g.account_snapshot(ids)
+    # Keep injected test adapters simple; they need only expose account(id).
+    names = ("checking", "savings", "card_a", "card_b", "joint_demo", "partner_checking")
+    records = await asyncio.gather(*(g.account(ids[name]) for name in names))
     mapped = dict(zip(names, records))
     for name, rec in mapped.items():
         if rec.get("_id") != ids[name]:
