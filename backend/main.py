@@ -4,6 +4,7 @@ Run: uvicorn main:app --app-dir backend --reload
 Never place Nessie or Gemini API keys in Flutter or GitHub.
 """
 import asyncio
+import hashlib
 from datetime import date, timedelta
 from decimal import Decimal
 import json
@@ -31,8 +32,10 @@ NESSIE_URL = os.getenv("NESSIE_BASE_URL", "https://prod-api.nessieisreal.com").r
 MANIFEST = Path(os.getenv("SEED_MANIFEST_PATH", str(ROOT / "seed_manifest.json")))
 SQLITE = Path(os.getenv("DB_PATH", str(ROOT / "creditpilot.sqlite3")))
 AUTH_MODE = os.getenv("AUTH_MODE", "demo").strip().lower()
+ENVIRONMENT = os.getenv("APP_ENV", "development").strip().lower()
+TENANTS_DIR = Path(os.getenv("TENANT_MANIFEST_DIR", str(ROOT / "private" / "tenants")))
 PAYMENT_MODE = os.getenv("PAYMENT_MODE", "simulate").strip().lower()
-ORIGINS = os.getenv("CORS_ORIGINS", "http://localhost:3000,http://localhost:8080,http://127.0.0.1:8080").split(",")
+ORIGINS = [o.strip() for o in os.getenv("CORS_ORIGINS", "http://localhost:3000,http://localhost:8080,http://127.0.0.1:8080").split(",") if o.strip()]
 
 if AUTH_MODE not in ("demo", "auth0"):
     raise RuntimeError("AUTH_MODE must be demo or auth0")
@@ -40,6 +43,18 @@ if PAYMENT_MODE not in ("simulate", "nessie"):
     raise RuntimeError("PAYMENT_MODE must be simulate or nessie")
 if PAYMENT_MODE == "nessie" and AUTH_MODE == "demo":
     raise RuntimeError("Nessie transfer execution requires AUTH_MODE=auth0; demo stays simulation-only")
+if ENVIRONMENT not in ("development", "test", "production"):
+    raise RuntimeError("APP_ENV must be development, test, or production")
+if ENVIRONMENT == "production":
+    if AUTH_MODE != "auth0":
+        raise RuntimeError("Production must use AUTH_MODE=auth0")
+    if not os.getenv("AUTH0_DOMAIN") or not os.getenv("AUTH0_AUDIENCE"):
+        raise RuntimeError("Production requires Auth0 issuer and audience")
+    if "*" in ORIGINS or any(not x.startswith("https://") for x in ORIGINS):
+        raise RuntimeError("Production CORS must use explicit HTTPS origins")
+    if PAYMENT_MODE != "simulate":
+        raise RuntimeError("Live sandbox transfers not enabled in production")
+
 
 app = FastAPI(title="CreditPilot AI API", version="1.0", description="Hackathon financial decision simulator")
 app.add_middleware(CORSMiddleware, allow_origins=ORIGINS,
@@ -65,14 +80,40 @@ def init_db():
     connection.close()
 
 
-def manifest() -> dict:
-    if not MANIFEST.is_file():
-        raise HTTPException(503, "Missing seed_manifest.json; run backend/scripts/seed_nessie.py --apply first")
-    data = json.loads(MANIFEST.read_text(encoding="utf-8"))
-    if not data.get("ids", {}).get("accounts"):
-        raise HTTPException(503, "Seed manifest has no accounts")
-    if not data.get("app_bills"):
-        raise HTTPException(503, "No app-only bill forecast data; rerun latest seed script --apply")
+def manifest_path_for(user: str) -> Path:
+    if AUTH_MODE == "demo":
+        return MANIFEST
+    if not user or user.startswith("demo-"):
+        raise HTTPException(403, "Authenticated user required")
+    fingerprint = hashlib.sha256(user.encode("utf-8")).hexdigest()
+    return TENANTS_DIR / (fingerprint + ".json")
+
+
+def has_linked_sandbox(user: str) -> bool:
+    path = manifest_path_for(user)
+    if not path.is_file():
+        return False
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if AUTH_MODE == "auth0" and data.get("owner_sub") != user:
+            return False
+        return bool(data.get("ids", {}).get("accounts") and data.get("app_bills"))
+    except (ValueError, OSError, TypeError):
+        return False
+
+
+def manifest(user: str = "demo-sarah") -> dict:
+    path = manifest_path_for(user)
+    if not path.is_file():
+        raise HTTPException(409, "No sandbox accounts linked to your profile. Complete onboarding.")
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (ValueError, OSError):
+        raise HTTPException(503, "Account mapping unavailable") from None
+    if AUTH_MODE == "auth0" and data.get("owner_sub") != user:
+        raise HTTPException(403, "Account ownership mismatch")
+    if not data.get("ids", {}).get("accounts") or not data.get("app_bills"):
+        raise HTTPException(503, "Account scenario not fully provisioned")
     return data
 
 
@@ -97,17 +138,21 @@ async def actor(authorization: Optional[str] = Header(None),
         claims = jwt.decode(token, signing_key.key, algorithms=["RS256"],
                             audience=audience, issuer="https://" + domain + "/",
                             options={"require": ["exp", "iss", "sub"]})
-        subject = str(claims["sub"])
-        allowed = {x.strip() for x in os.getenv("AUTH0_ALLOWED_SUBS", "").split(",") if x.strip()}
-        if not allowed:
-            raise HTTPException(503, "Set AUTH0_ALLOWED_SUBS for this fictional demo sandbox")
-        if subject not in allowed:
-            raise HTTPException(403, "This authenticated user is not enrolled in the demo")
-        return subject
+        # Authenticated signup users can reach /api/me, but have no access
+        # to another user's financial sandbox until explicitly provisioned.
+        return str(claims["sub"])
     except HTTPException:
         raise
     except Exception:
         raise HTTPException(401, "Invalid or expired authentication token") from None
+
+
+@app.get("/api/me")
+def me(user=Depends(actor)):
+    linked = has_linked_sandbox(user)
+    return {"authenticated": True, "user_id": user,
+            "sandbox_linked": linked, "onboarding_required": not linked,
+            "data_source": "fictional_nessie_sandbox"}
 
 
 class NessieGateway:
@@ -264,7 +309,7 @@ def health():
 
 @app.get("/api/dashboard")
 async def dashboard(request: Request, user=Depends(actor)):
-    m = manifest()
+    m = manifest(user)
     a = await accounts(gateway(request), m)
     f = forecast_from(a, m)
     return {"accounts": [
@@ -282,7 +327,7 @@ async def get_accounts(request: Request, user=Depends(actor)):
 
 @app.get("/api/bills")
 def get_bills(user=Depends(actor)):
-    return {"bills": bills(manifest()), "source": "local_app_simulation"}
+    return {"bills": bills(manifest(user)), "source": "local_app_simulation"}
 
 
 class BillForecastRequest(BaseModel):
@@ -292,7 +337,7 @@ class BillForecastRequest(BaseModel):
 
 @app.post("/api/bills/forecast")
 async def bill_forecast(body: BillForecastRequest, request: Request, user=Depends(actor)):
-    m = manifest()
+    m = manifest(user)
     a = await accounts(gateway(request), m)
     return forecast_from(a, m, body.horizon_days, body.protected_reserve)
 
@@ -306,7 +351,7 @@ class CardRequest(BaseModel):
 
 @app.post("/api/cards/evaluate")
 async def cards_evaluate(body: CardRequest, request: Request, user=Depends(actor)):
-    m = manifest()
+    m = manifest(user)
     a = await accounts(gateway(request), m)
     result = card_comparison(card_rules(m, a), body.purchase_amount,
                              body.purchase_category.lower(), body.utilization_target_pct)
@@ -326,8 +371,8 @@ class AutopayRequest(BaseModel):
     savings_reserve: float = Field(200, ge=0)
 
 
-async def calculate_autopay(body, g):
-    m = manifest()
+async def calculate_autopay(body, g, user):
+    m = manifest(user)
     a = await accounts(g, m)
     f = forecast_from(a, m, body.horizon_days)
     rule = card_rules(m, a)[body.account]
@@ -353,7 +398,7 @@ async def calculate_autopay(body, g):
 
 @app.post("/api/autopay/preview")
 async def preview_autopay(body: AutopayRequest, request: Request, user=Depends(actor)):
-    return await calculate_autopay(body, gateway(request))
+    return await calculate_autopay(body, gateway(request), user)
 
 
 def insert_action(identity, owner, typ, status, payload):
@@ -374,7 +419,7 @@ class AutopayPlanRequest(AutopayRequest):
 async def plan_autopay(body: AutopayPlanRequest, request: Request, user=Depends(actor)):
     if not body.confirmed:
         raise HTTPException(400, "Explicit user confirmation required")
-    preview = await calculate_autopay(body, gateway(request))
+    preview = await calculate_autopay(body, gateway(request), user)
     if preview["recommended_payment_amount"] <= 0:
         raise HTTPException(409, "No affordable payment to schedule")
     identity = str(uuid4())
@@ -422,7 +467,7 @@ class EmergencyRequest(BaseModel):
 
 @app.post("/api/emergency/evaluate")
 async def evaluate_emergency(body: EmergencyRequest, request: Request, user=Depends(actor)):
-    m = manifest()
+    m = manifest(user)
     a = await accounts(gateway(request), m)
     f = forecast_from(a, m, body.horizon_days)
     result = emergency(account_amount(a["checking"]), account_amount(a["savings"]),
@@ -439,7 +484,7 @@ class JointRequest(BaseModel):
 
 @app.post("/api/joint/evaluate")
 async def evaluate_joint(body: JointRequest, request: Request, user=Depends(actor)):
-    m = manifest()
+    m = manifest(user)
     a = await accounts(gateway(request), m)
     result = joint_risk(body.amount, account_amount(a["joint_demo"]))
     result.update({"merchant": body.merchant, "category": body.category,
@@ -461,7 +506,13 @@ async def propose_joint(body: JointProposal, request: Request, user=Depends(acto
         raise HTTPException(400, "Initiator confirmation required")
     evaluation = await evaluate_joint(body, request, user)
     identity = str(uuid4())
-    payload = {"initiator": user, "evaluation": evaluation}
+    tenant = manifest(user)
+    assigned_partner = ("demo-jamie" if AUTH_MODE == "demo"
+                        else tenant.get("joint_partner_sub", ""))
+    if not assigned_partner or assigned_partner == user:
+        raise HTTPException(409, "Invite a verified partner before requesting approval")
+    payload = {"initiator": user, "partner_sub": assigned_partner,
+               "evaluation": evaluation}
     insert_action(identity, user, "joint_proposal", "awaiting_partner", payload)
     return {"proposal_id": identity, "status": "awaiting_partner",
             "note": "APP-SIMULATED approval, not a bank authorization hold"}
@@ -482,8 +533,8 @@ def joint_decision(proposal_id: str, body: JointDecision, user=Depends(actor)):
             raise HTTPException(404, "Unknown proposal")
         if row["owner"] == user:
             raise HTTPException(403, "Initiator cannot approve their own joint proposal")
-        if AUTH_MODE == "auth0" and user != os.getenv("JOINT_PARTNER_SUB", ""):
-            raise HTTPException(403, "Authenticated user is not the configured partner")
+        if user != json.loads(row["payload"]).get("partner_sub"):
+            raise HTTPException(403, "Only the invited partner can approve")
         if row["status"] != "awaiting_partner":
             raise HTTPException(409, "Proposal already decided")
         # In demo mode the second demo identity models partner consent; real ownership
@@ -506,7 +557,7 @@ class TransferRequest(BaseModel):
 
 @app.post("/api/transfers/preview")
 async def preview_transfer(body: TransferRequest, request: Request, user=Depends(actor)):
-    m = manifest()
+    m = manifest(user)
     a = await accounts(gateway(request), m)
     balance = account_amount(a["savings"])
     max_safe = max(0, amount(balance - body.savings_reserve))
@@ -550,7 +601,7 @@ async def execute_transfer(body: TransferRequest, request: Request, user=Depends
         outcome = "simulated_only"
     else:
         try:
-            m = manifest()
+            m = manifest(user)
             ids = m["ids"]["accounts"]
             # The documented Nessie payer-path / payee_id contract is used.
             await gateway(request).transfer(ids["savings"], ids["checking"], body.amount)
@@ -581,7 +632,7 @@ class PurchaseDecision(CardRequest):
 
 @app.post("/api/decisions/purchase")
 async def integrated_decision(body: PurchaseDecision, request: Request, user=Depends(actor)):
-    m = manifest()
+    m = manifest(user)
     a = await accounts(gateway(request), m)
     cards = card_comparison(card_rules(m, a), body.purchase_amount,
                             body.purchase_category.lower(), body.utilization_target_pct)
