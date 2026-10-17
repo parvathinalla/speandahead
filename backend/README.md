@@ -16,7 +16,13 @@ python backend\scripts\seed_nessie.py --verify
 python -m uvicorn main:app --app-dir backend --host 127.0.0.1 --port 8000 --reload
 ```
 
-Open [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs) for interactive API docs, or [http://127.0.0.1:8000/health](http://127.0.0.1:8000/health) for basic readiness.
+Open [http://127.0.0.1:8000/docs](http://127.0.0.1:8000/docs) for interactive API docs, or [http://127.0.0.1:8000/health](http://127.0.0.1:8000/health) for basic readiness. In a separate terminal, verify your actual Nessie-backed responses without creating any payments:
+
+```powershell
+python backend\scripts\smoke_test.py
+```
+
+All smoke checks should print `PASS`. This requires your local seed manifest to contain `app_bills` from the latest seeder. If it fails, read the exact error rather than falling back to fake values.
 
 In a second terminal, run Flutter:
 
