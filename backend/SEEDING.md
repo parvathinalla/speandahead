@@ -8,7 +8,7 @@ From PowerShell, inside the Flutter repository:
 
 ```powershell
 git pull origin main
-Copy-Item backend\.env.example backend\.env
+if (!(Test-Path backend\.env)) { Copy-Item backend\.env.example backend\.env }
 notepad backend\.env
 ```
 
