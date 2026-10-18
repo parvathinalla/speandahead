@@ -58,9 +58,11 @@ def main():
           round(bill["total_bills_due"], 2))
 
     purchase_a = call(base, "/api/cards/evaluate",
-                      {"purchase_amount": 100, "purchase_category": "groceries"})
+                      {"purchase_amount": 100, "purchase_category": "groceries",
+                       "merchant_name": "Fresh Fields Market"})
     purchase_b = call(base, "/api/cards/evaluate",
-                      {"purchase_amount": 200, "purchase_category": "groceries"})
+                      {"purchase_amount": 200, "purchase_category": "groceries",
+                       "merchant_name": "Fresh Fields Market"})
     check("Card utilization responds to different purchases",
           purchase_b["cards"][0]["utilization_after_pct"] >
           purchase_a["cards"][0]["utilization_after_pct"])

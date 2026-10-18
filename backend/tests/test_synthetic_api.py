@@ -69,10 +69,12 @@ def test_complete_dynamic_financial_api_for_new_user(web_client):
     assert client.get("/api/me", headers=head).status_code == 200
 
     accounts = client.get("/api/accounts", headers=head).json()["accounts"]
-    assert len(accounts) >= 6
+    assert len(accounts) >= 10
     assert all(item["source"] == "synthetic_banking_demo" for item in accounts)
     card_list = client.get("/api/cards/catalog", headers=head).json()["cards"]
-    assert 2 <= len(card_list) <= 4
+    assert 6 <= len(card_list) <= 8
+    assert any(c["display_name"] == "Horizon Flight Reserve" for c in card_list)
+    assert all(c["visual_theme"] for c in card_list)
     assert all(c["display_name"] not in ("Card A", "Card B") for c in card_list)
     assert all(len(c["last4"]) == 4 for c in card_list)
 
@@ -89,7 +91,8 @@ def test_complete_dynamic_financial_api_for_new_user(web_client):
     assert forecast.json()["total_bills_due"] > 0
 
     suggestion = client.post("/api/cards/evaluate", headers=head, json={
-        "purchase_amount": 120, "purchase_category": "groceries"})
+        "purchase_amount": 120, "purchase_category": "groceries",
+        "merchant_name": "Fresh Fields Market"})
     assert suggestion.status_code == 200
     assert suggestion.json()["cards"][0]["display_name"]
 
@@ -97,6 +100,23 @@ def test_complete_dynamic_financial_api_for_new_user(web_client):
         "account": card_list[0]["account"], "target_utilization_pct": 29})
     assert paydown.status_code == 200, paydown.text
     assert paydown.json()["card_display_name"] == card_list[0]["display_name"]
+
+    portfolio = client.post("/api/autopay/portfolio-preview", headers=head, json={
+        "include_available_savings": True, "savings_reserve": 1000,
+    })
+    assert portfolio.status_code == 200, portfolio.text
+    optimized = portfolio.json()
+    assert len(optimized["cards"]) == len(card_list)
+    assert optimized["allocated_payment_total"] <= optimized["available_payment_budget"]
+    assert optimized["aggregate_utilization_after_pct"] <= optimized["aggregate_utilization_before_pct"]
+    assert len(optimized["notification_plan"]) == len(card_list)
+    activation = client.post("/api/autopay/portfolio-plans", headers=head, json={
+        "include_available_savings": False, "confirmed": True,
+    })
+    assert activation.status_code == 200, activation.text
+    assert activation.json()["status"] == "statement_guard_active"
+    assert activation.json()["execution"] == "NO BANK PAYMENT WILL OCCUR"
+    assert activation.json()["cards_monitored"] == len(card_list)
 
     emergency = client.post("/api/emergency/evaluate", headers=head,
                             json={"emergency_cost": 1800})

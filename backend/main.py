@@ -13,7 +13,7 @@ import os
 from pathlib import Path
 import sqlite3
 import time
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 from uuid import uuid4
 
 import httpx
@@ -24,14 +24,18 @@ from pydantic import BaseModel, Field
 import jwt
 
 from finance_engine import (
-    amount, autopay_preview, card_comparison, emergency, forecast, money, next_payment_date
+    adaptive_autopay_preview, amount, autopay_preview, card_comparison,
+    clamp_positive, emergency,
+    forecast, joint_risk, money, next_payment_date, optimize_card_portfolio,
+    purchase_guidance
 )
 import synthetic_bank as demo_bank
 from tigerdata_store import TigerDataStore
 from nessie_links import NessieLinkStore
 from agent_memory import AgentMemory
-from agent_service import ask_gemini, snapshot as agent_snapshot
+from agent_service import ask_gemini, extract_trip_plan, snapshot as agent_snapshot
 from push_notifications import send_cashflow_warning
+from location_service import nearby_merchants
 
 ROOT = Path(__file__).resolve().parent
 load_dotenv(ROOT / ".env")
@@ -44,6 +48,7 @@ DEMO_STORE = os.getenv("DEMO_STORE", "sqlite").strip().lower()
 ENVIRONMENT = os.getenv("APP_ENV", "development").strip().lower()
 TENANTS_DIR = Path(os.getenv("TENANT_MANIFEST_DIR", str(ROOT / "private" / "tenants")))
 PAYMENT_MODE = os.getenv("PAYMENT_MODE", "simulate").strip().lower()
+GOOGLE_PLACES_API_KEY = os.getenv("GOOGLE_PLACES_API_KEY", "").strip()
 ORIGINS = [o.strip() for o in os.getenv("CORS_ORIGINS", "http://localhost:3000,http://localhost:8080,http://127.0.0.1:8080").split(",") if o.strip()]
 PUSH_ENABLED = os.getenv("PUSH_NOTIFICATIONS_ENABLED", "false").strip().lower() == "true"
 PUSH_DAILY_HOUR = int(os.getenv("PUSH_DAILY_HOUR_LOCAL", "9"))
@@ -459,6 +464,8 @@ def card_rules(m, account_values):
             "issuer": x.get("issuer", item.get("institution", "Demo issuer")),
             "last4": x.get("last4", item.get("last4", "0000")),
             "network": x.get("network", item.get("network", "Card")),
+            "visual_theme": x.get("visual_theme", "ocean"),
+            "benefit_summary": x.get("benefit_summary", "Everyday card rewards"),
         }
     return rules
 
@@ -707,6 +714,8 @@ async def get_card_catalog(request: Request, user=Depends(actor)):
             "last4": rule["last4"], "balance": rule["balance"],
             "credit_limit": rule["credit_limit"],
             "rewards": rule["reward_rates"],
+            "visual_theme": rule["visual_theme"],
+            "benefit_summary": rule["benefit_summary"],
             "source": m.get("source", "local_app_simulation"),
         })
     return {"cards": cards,
@@ -835,9 +844,44 @@ async def bill_forecast(body: BillForecastRequest, request: Request, user=Depend
 
 class CardRequest(BaseModel):
     purchase_amount: float = Field(..., gt=0, le=100000)
-    purchase_category: str = Field("groceries", max_length=40)
-    merchant_name: str = Field("Demo merchant", max_length=90)
+    purchase_category: Literal[
+        "groceries", "gas", "dining", "flights", "travel", "transit",
+        "streaming", "shopping", "entertainment", "other"
+    ] = "other"
+    merchant_name: str = Field(..., min_length=1, max_length=90)
     utilization_target_pct: float = Field(30, ge=0, le=100)
+
+
+class NearbyMerchantRequest(BaseModel):
+    latitude: float = Field(..., ge=-90, le=90)
+    longitude: float = Field(..., ge=-180, le=180)
+    radius_m: int = Field(250, ge=50, le=2000)
+
+
+@app.post("/api/locations/nearby")
+async def locations_nearby(body: NearbyMerchantRequest, user=Depends(actor)):
+    # Resolve authentication before forwarding coordinates. Coordinates are
+    # used for this request only and are never written to application storage.
+    del user
+    if not GOOGLE_PLACES_API_KEY:
+        return {
+            "configured": False,
+            "places": [],
+            "message": "Nearby merchant lookup is not configured.",
+        }
+    try:
+        places = await nearby_merchants(
+            body.latitude, body.longitude, GOOGLE_PLACES_API_KEY, body.radius_m)
+    except httpx.HTTPStatusError as error:
+        status = error.response.status_code
+        raise HTTPException(502, f"Nearby merchant provider returned HTTP {status}") from None
+    except httpx.HTTPError:
+        raise HTTPException(502, "Nearby merchant lookup is temporarily unavailable") from None
+    return {
+        "configured": True,
+        "places": places,
+        "location_retained": False,
+    }
 
 
 @app.post("/api/cards/evaluate")
@@ -862,6 +906,10 @@ class AutopayRequest(BaseModel):
     assumed_savings_transfer: float = Field(
         0, ge=0, description="What-if funding transfer; no money moves")
     savings_reserve: float = Field(200, ge=0)
+    reminder_lead_days: int = Field(5, ge=1, le=14)
+    payment_processing_days: int = Field(3, ge=1, le=7)
+    notifications_enabled: bool = True
+    adaptive_target: bool = True
 
 
 async def calculate_autopay(body, g, user):
@@ -876,22 +924,109 @@ async def calculate_autopay(body, g, user):
         raise HTTPException(422, "Unknown credit card for this signed-in user")
     rule = available_cards[account_key]
     x = m["app_scenario"][account_key]
-    statement = (date.today() + timedelta(days=int(x.get("statement_closes_in_days", 9)))).isoformat()
+    today = date.today()
+    statement_date = today + timedelta(
+        days=int(x.get("statement_closes_in_days", 9)))
+    statement = statement_date.isoformat()
     transfer = money(body.assumed_savings_transfer)
     remaining_savings = money(account_amount(a["savings"])) - transfer
     if remaining_savings < money(body.savings_reserve):
         raise HTTPException(409, "What-if savings transfer would violate protected savings reserve")
     checking_for_plan = money(account_amount(a["checking"])) + transfer
-    result = autopay_preview(rule["balance"], rule["credit_limit"],
-                             body.target_utilization_pct,
-                             checking_for_plan, f["total_bills_due"],
-                             body.safety_buffer, statement)
+    if body.adaptive_target:
+        result = adaptive_autopay_preview(
+            rule["balance"], rule["credit_limit"], checking_for_plan,
+            f["total_bills_due"], body.safety_buffer, statement)
+    else:
+        result = autopay_preview(
+            rule["balance"], rule["credit_limit"],
+            body.target_utilization_pct, checking_for_plan,
+            f["total_bills_due"], body.safety_buffer, statement)
+        result["adaptive_target"] = False
+        result["recommended_target_pct"] = body.target_utilization_pct
+        result["target_status"] = "manual_target"
+        result["target_options"] = []
+        result["target_explanation"] = "The user selected this target manually."
     result["assumed_savings_transfer"] = amount(transfer)
     result["savings_after_assumed_transfer"] = amount(remaining_savings)
     result["is_what_if_scenario"] = transfer > 0
     result["account"] = account_key
     result["card_display_name"] = rule["display_name"]
     result["card_last4"] = rule["last4"]
+    early_payment_date = max(
+        today, statement_date - timedelta(days=body.payment_processing_days))
+    reminder_date = max(
+        today, early_payment_date - timedelta(days=body.reminder_lead_days))
+    due_date = statement_date + timedelta(days=21)
+    remaining_after_early = clamp_positive(
+        money(rule["balance"]) - money(result["recommended_payment_amount"]))
+    result["estimated_statement_close"] = statement
+    result["estimated_reporting_window"] = {
+        "start": statement,
+        "end": (statement_date + timedelta(days=3)).isoformat(),
+        "confidence": "estimated",
+    }
+    result["early_payment_date"] = early_payment_date.isoformat()
+    result["estimated_payment_due_date"] = due_date.isoformat()
+    result["remaining_balance_after_early_payment"] = amount(remaining_after_early)
+    result["reminder_lead_days"] = body.reminder_lead_days
+    result["payment_processing_days"] = body.payment_processing_days
+    result["notifications_enabled"] = body.notifications_enabled
+    early_amount = money(result["recommended_payment_amount"])
+    selected_target = result.get("recommended_target_pct")
+    early_message = (
+        f"Review a ${early_amount} payment by {early_payment_date.isoformat()} "
+        f"to target {selected_target:g}% utilization."
+        if early_amount > 0 else
+        f"Recheck the balance and available cash by {early_payment_date.isoformat()}; "
+        "no affordable early payment is currently identified."
+    )
+    result["notification_plan"] = [
+        {
+            "type": "utilization_reminder",
+            "date": reminder_date.isoformat(),
+            "title": f"{rule['display_name']} utilization check",
+            "message": early_message,
+        },
+        {
+            "type": "early_payment_deadline",
+            "date": early_payment_date.isoformat(),
+            "title": "Early payment window",
+            "message": (
+                f"Payment processing may take {body.payment_processing_days} days. "
+                "Confirm the issuer has posted any payment."
+            ),
+        },
+        {
+            "type": "statement_balance_due",
+            "date": (due_date - timedelta(days=3)).isoformat(),
+            "title": "Statement balance reminder",
+            "message": (
+                f"Review the statement balance before the estimated "
+                f"{due_date.isoformat()} due date to help avoid interest."
+            ),
+        },
+    ]
+    result["timeline"] = [
+        {
+            "stage": "Early utilization payment",
+            "date": early_payment_date.isoformat(),
+            "amount": result["recommended_payment_amount"],
+            "description": "Optional payment intended to lower the balance likely to be reported.",
+        },
+        {
+            "stage": "Statement closes",
+            "date": statement,
+            "amount": None,
+            "description": "Estimated billing-cycle close; issuer reporting may occur on another date.",
+        },
+        {
+            "stage": "Statement balance due",
+            "date": due_date.isoformat(),
+            "amount": amount(remaining_after_early),
+            "description": "Pay the actual statement balance shown by the issuer, not this estimate.",
+        },
+    ]
     result["data_sources"] = {
         "balances": m.get("source", "nessie_sandbox"),
         "credit_limit_and_statement": m.get("source", "local_app_simulation"),
@@ -918,19 +1053,132 @@ class AutopayPlanRequest(AutopayRequest):
     confirmed: bool
 
 
+class PortfolioAutopayRequest(BaseModel):
+    safety_buffer: float = Field(100, ge=0)
+    savings_reserve: float = Field(1000, ge=0)
+    include_available_savings: bool = False
+    horizon_days: int = Field(14, ge=1, le=60)
+    reminder_lead_days: int = Field(5, ge=1, le=14)
+    payment_processing_days: int = Field(3, ge=1, le=7)
+    notifications_enabled: bool = True
+
+
+async def calculate_portfolio_autopay(body, g, user):
+    m = manifest(user)
+    account_values = await accounts(g, m)
+    forecast = forecast_from(account_values, m, body.horizon_days)
+    rules = card_rules(m, account_values)
+    today = date.today()
+    cards = []
+    for key, rule in rules.items():
+        scenario = m.get("app_scenario", {}).get(key, {})
+        statement_date = today + timedelta(
+            days=int(scenario.get("statement_closes_in_days", 9)))
+        pay_by = max(
+            today, statement_date - timedelta(days=body.payment_processing_days))
+        cards.append({
+            "account": key,
+            "display_name": rule["display_name"],
+            "last4": rule["last4"],
+            "balance": rule["balance"],
+            "credit_limit": rule["credit_limit"],
+            "statement_date": statement_date.isoformat(),
+            "pay_by_date": pay_by.isoformat(),
+        })
+
+    checking = money(account_amount(account_values["checking"]))
+    savings = money(account_amount(account_values.get("savings", {})))
+    savings_available = (
+        clamp_positive(savings - money(body.savings_reserve))
+        if body.include_available_savings else Decimal("0.00"))
+    available_budget = clamp_positive(
+        checking + savings_available - money(forecast["total_bills_due"])
+        - money(body.safety_buffer))
+    result = optimize_card_portfolio(cards, available_budget)
+    result.update({
+        "checking_balance": amount(checking),
+        "savings_balance": amount(savings),
+        "savings_included": body.include_available_savings,
+        "savings_reserve": amount(body.savings_reserve),
+        "upcoming_bills": forecast["total_bills_due"],
+        "safety_buffer": amount(body.safety_buffer),
+        "horizon_days": body.horizon_days,
+        "notifications_enabled": body.notifications_enabled,
+        "reporting_dates_are_estimates": True,
+        "funding_explanation": (
+            "Budget uses checking plus savings above the protected reserve, after "
+            "upcoming bills and the safety buffer. No funds move automatically."
+            if body.include_available_savings else
+            "Budget uses checking after upcoming bills and the safety buffer."
+        ),
+    })
+    reminders = []
+    for card in result["cards"]:
+        reminder_date = max(
+            today,
+            date.fromisoformat(card["pay_by_date"])
+            - timedelta(days=body.reminder_lead_days),
+        )
+        payment = money(card["recommended_payment_amount"])
+        reminders.append({
+            "account": card["account"],
+            "date": reminder_date.isoformat(),
+            "title": f"{card['display_name']} statement check",
+            "message": (
+                f"Review a ${payment} payment by {card['pay_by_date']} before "
+                "the estimated statement close."
+                if payment > 0 else
+                "Review this card before its estimated statement close; protected "
+                "cash is currently allocated elsewhere."
+            ),
+        })
+    result["notification_plan"] = reminders
+    return result
+
+
+@app.post("/api/autopay/portfolio-preview")
+async def portfolio_autopay_preview(
+        body: PortfolioAutopayRequest, request: Request, user=Depends(actor)):
+    return await calculate_portfolio_autopay(body, gateway(request), user)
+
+
+class PortfolioAutopayPlanRequest(PortfolioAutopayRequest):
+    confirmed: bool
+
+
+@app.post("/api/autopay/portfolio-plans")
+async def plan_portfolio_autopay(
+        body: PortfolioAutopayPlanRequest, request: Request, user=Depends(actor)):
+    if not body.confirmed:
+        raise HTTPException(400, "Explicit user confirmation required")
+    preview = await calculate_portfolio_autopay(body, gateway(request), user)
+    identity = str(uuid4())
+    insert_action(
+        identity, user, "portfolio_autopay_plan", "statement_guard_active", preview)
+    return {
+        "plan_id": identity,
+        "status": "statement_guard_active",
+        "allocated_payment_total": preview["allocated_payment_total"],
+        "cards_monitored": len(preview["cards"]),
+        "notification_plan": preview["notification_plan"],
+        "device_push_configured": False,
+        "execution": "NO BANK PAYMENT WILL OCCUR",
+    }
+
+
 @app.post("/api/autopay/plans")
 async def plan_autopay(body: AutopayPlanRequest, request: Request, user=Depends(actor)):
     if not body.confirmed:
         raise HTTPException(400, "Explicit user confirmation required")
     preview = await calculate_autopay(body, gateway(request), user)
-    if preview["recommended_payment_amount"] <= 0:
-        raise HTTPException(409, "No affordable payment to schedule")
     identity = str(uuid4())
-    insert_action(identity, user, "autopay_plan", "scheduled_simulation", preview)
-    return {"plan_id": identity, "status": "scheduled_simulation",
+    insert_action(identity, user, "autopay_plan", "statement_guard_active", preview)
+    return {"plan_id": identity, "status": "statement_guard_active",
             "payment_amount": preview["recommended_payment_amount"],
+            "notification_plan": preview["notification_plan"],
+            "device_push_configured": False,
             "execution": "NO BANK PAYMENT WILL OCCUR",
-            "note": "This stores a plan; it is not a credit bureau or issuer autopay integration."}
+            "note": "Reminder dates are stored. Device push requires a configured notification provider; no payment is initiated."}
 
 
 @app.get("/api/autopay/plans")
@@ -952,7 +1200,7 @@ def cancel_autopay(plan_id: str, user=Depends(actor)):
     connection = db()
     try:
         cursor = connection.execute(
-            "UPDATE actions SET status='cancelled' WHERE id=? AND owner=? AND action_type='autopay_plan' AND status='scheduled_simulation'",
+            "UPDATE actions SET status='cancelled' WHERE id=? AND owner=? AND action_type='autopay_plan' AND status IN ('scheduled_simulation','statement_guard_active')",
             (plan_id, user))
         connection.commit()
         if not cursor.rowcount:
@@ -1096,15 +1344,122 @@ async def integrated_decision(body: PurchaseDecision, request: Request, user=Dep
     cards = card_comparison(card_rules(m, a), body.purchase_amount,
                             body.purchase_category.lower(), body.utilization_target_pct)
     f = forecast_from(a, m)
+    guidance = purchase_guidance(cards, f)
     result = {"decision": "purchase_simulation", "card_options": cards,
               "cashflow_before_purchase": f,
               "recommended_card": cards["recommended_card"],
+              "purchase_guidance": guidance,
               "note": "Credit-card purchases add future repayment obligations; an immediate checking debit does not occur."}
     if body.emergency_cost is not None:
         result["emergency_stress_test"] = emergency(
             account_amount(a["checking"]), account_amount(a["savings"]),
             f["total_bills_due"], body.emergency_cost, 300)
     return result
+
+
+class TripChatTurn(BaseModel):
+    role: Literal["user", "assistant"]
+    content: str = Field(..., min_length=1, max_length=1800)
+
+
+class TripCopilotRequest(BaseModel):
+    message: str = Field(..., min_length=2, max_length=1500)
+    history: list[TripChatTurn] = Field(default_factory=list, max_length=8)
+    utilization_target_pct: float = Field(30, ge=1, le=100)
+
+
+@app.post("/api/cards/copilot/plan")
+async def cards_trip_copilot(body: TripCopilotRequest, request: Request,
+                             user=Depends(actor)):
+    """Parse trip intent with Gemini, then calculate every recommendation locally."""
+    parsed, parse_error = await extract_trip_plan(
+        body.message.strip(), [turn.model_dump() for turn in body.history])
+    if parsed is None:
+        return {
+            "assistant_message": parse_error,
+            "ai_used": False,
+            "recommendations": [],
+            "calculation_source": "deterministic_backend",
+        }
+
+    raw_purchases = parsed.get("purchases", [])
+    if not isinstance(raw_purchases, list):
+        raw_purchases = []
+    valid_categories = {
+        "groceries", "gas", "dining", "flights", "travel", "transit",
+        "streaming", "shopping", "entertainment", "other",
+    }
+    purchases = []
+    for item in raw_purchases[:12]:
+        if not isinstance(item, dict):
+            continue
+        try:
+            purchase_amount = float(item.get("amount", 0))
+        except (TypeError, ValueError):
+            continue
+        category = str(item.get("category", "other")).lower()
+        purpose = str(item.get("merchant_or_purpose", "Trip purchase")).strip()[:90]
+        if (not purpose or category not in valid_categories
+                or purchase_amount <= 0 or purchase_amount > 100000):
+            continue
+        purchases.append({
+            "merchant_or_purpose": purpose,
+            "category": category,
+            "amount": round(purchase_amount, 2),
+        })
+
+    m = manifest(user)
+    a = await accounts(gateway(request), m)
+    working_rules = card_rules(m, a)
+    cashflow = forecast_from(a, m)
+    recommendations = []
+    total_rewards = 0.0
+    # Planned purchases are evaluated cumulatively. Once a card is selected,
+    # its simulated balance increases before the next trip item is ranked.
+    for purchase in purchases:
+        comparison = card_comparison(
+            working_rules, purchase["amount"], purchase["category"],
+            body.utilization_target_pct)
+        guidance = purchase_guidance(comparison, cashflow)
+        best = comparison.get("recommended_card")
+        if best:
+            total_rewards += float(best.get("rewards_amount", 0))
+            selected = working_rules.get(best["card_name"])
+            if selected is not None:
+                selected["balance"] = round(
+                    float(selected.get("balance", 0)) + purchase["amount"], 2)
+        recommendations.append({
+            **purchase,
+            "recommended_card": best,
+            "verdict": guidance.get("verdict"),
+            "headline": guidance.get("headline"),
+            "timing_advice": guidance.get("timing_advice"),
+            "alternatives": comparison.get("cards", [])[1:3],
+        })
+
+    missing = parsed.get("missing_information", [])
+    if not isinstance(missing, list):
+        missing = []
+    safe_missing = [str(item)[:180] for item in missing[:5] if str(item).strip()]
+    total_spend = round(sum(item["amount"] for item in purchases), 2)
+    return {
+        "trip_title": str(parsed.get("trip_title", "Trip plan"))[:90],
+        "assistant_message": str(parsed.get("assistant_message", ""))[:500],
+        "missing_information": safe_missing,
+        "recommendations": recommendations,
+        "summary": {
+            "planned_spend": total_spend,
+            "estimated_rewards": round(total_rewards, 2),
+            "purchase_count": len(recommendations),
+        },
+        "ai_used": True,
+        "calculation_source": "deterministic_backend",
+        "bank_data_source": m.get("source", "nessie_sandbox"),
+        "disclaimer": (
+            "Planning estimate only. Confirm merchant categories and issuer terms; "
+            "no purchase or payment was initiated."
+        ),
+    }
 
 
 # Personalized AI agent. Gemini never owns balances or long-term storage.

@@ -26,6 +26,8 @@
 	<string>$(PRODUCT_COPYRIGHT)</string>
 	<key>NSMainNibFile</key>
 	<string>MainMenu</string>
+	<key>NSLocationUsageDescription</key>
+	<string>CreditPilot uses your location to identify nearby merchants and recommend the most suitable card. Your location is not stored.</string>
 	<key>NSPrincipalClass</key>
 	<string>NSApplication</string>
 </dict>

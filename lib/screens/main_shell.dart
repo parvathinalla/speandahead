@@ -1,6 +1,9 @@
 import 'dart:async';
+
 import 'package:flutter/material.dart';
+
 import '../services/api_service.dart';
+import '../services/location_service.dart';
 import '../services/push_notification_service.dart';
 import '../theme/app_theme.dart';
 import '../auth/auth_session.dart';
@@ -33,8 +36,10 @@ class _MainShellState extends State<MainShell> {
       _visited.add(3);
     }
     _checkJoint();
-    _jointTimer =
-        Timer.periodic(const Duration(seconds: 10), (_) => _checkJoint());
+    _jointTimer = Timer.periodic(
+      const Duration(seconds: 10),
+      (_) => _checkJoint(),
+    );
     _pushOpenSubscription = PushNotificationService.instance.cashflowOpens
         .listen((_) => _openCashflowFromPush());
     if (PushNotificationService.instance.takePendingCashflowOpen()) {
@@ -42,6 +47,8 @@ class _MainShellState extends State<MainShell> {
         if (mounted) _openCashflowFromPush();
       });
     }
+    // Ask once after sign-in so Cards can immediately rank nearby merchants.
+    unawaited(LocationService.instance.initialize());
   }
 
   @override
@@ -65,16 +72,19 @@ class _MainShellState extends State<MainShell> {
     try {
       final membership = await ApiService.jointMembership();
       final hasJoint = membership['has_joint_account'] == true;
-      final data =
-          hasJoint ? await ApiService.jointPayments() : <String, dynamic>{};
+      final data = hasJoint
+          ? await ApiService.jointPayments()
+          : <String, dynamic>{};
       final payments = data['payments'] as List? ?? [];
       if (mounted) {
         setState(() {
           _hasJoint = hasJoint;
           _notificationCount = payments
-              .where((p) => membership['role'] == 'primary'
-                  ? p['can_decide'] == true
-                  : ['approved', 'declined', 'unknown'].contains(p['status']))
+              .where(
+                (p) => membership['role'] == 'primary'
+                    ? p['can_decide'] == true
+                    : ['approved', 'declined', 'unknown'].contains(p['status']),
+              )
               .length;
           if (!hasJoint && _currentIndex == 3) {
             _currentIndex = 2;
@@ -90,6 +100,7 @@ class _MainShellState extends State<MainShell> {
   }
 
   int _currentIndex = 2; // Start on AutoPay (Flagship screen)
+  String? _preferredAutopayAccount;
   // Only mount a screen on its first visit. IndexedStack otherwise starts all
   // five network requests at once, each previously fetching six Nessie accounts.
   final Set<int> _visited = {2};
@@ -101,13 +112,24 @@ class _MainShellState extends State<MainShell> {
     });
   }
 
+  void _planPaydown(String account) {
+    setState(() {
+      _preferredAutopayAccount = account;
+      _currentIndex = 2;
+      _visited.add(2);
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
     final visibleTabs = [0, 1, 2, if (_hasJoint) 3, 4];
     final screens = [
       const BillsScreen(),
-      CardsScreen(onNavigateTab: _onTabTapped),
-      AutoPayScreen(onBack: () => _onTabTapped(1)),
+      CardsScreen(onNavigateTab: _onTabTapped, onPlanPaydown: _planPaydown),
+      AutoPayScreen(
+        onBack: () => _onTabTapped(1),
+        preferredAccount: _preferredAutopayAccount,
+      ),
       const JointScreen(),
       const EmergencyScreen(),
     ];
@@ -119,14 +141,17 @@ class _MainShellState extends State<MainShell> {
             RichText(
               text: const TextSpan(
                 style: TextStyle(
-                    fontFamily: 'Plus Jakarta Sans',
-                    fontSize: 18,
-                    fontWeight: FontWeight.w800,
-                    color: AppTheme.brandNavy),
+                  fontFamily: 'Plus Jakarta Sans',
+                  fontSize: 18,
+                  fontWeight: FontWeight.w800,
+                  color: AppTheme.brandNavy,
+                ),
                 children: [
                   TextSpan(text: "CreditPilot "),
                   TextSpan(
-                      text: "AI", style: TextStyle(color: AppTheme.brandBlue)),
+                    text: "AI",
+                    style: TextStyle(color: AppTheme.brandBlue),
+                  ),
                 ],
               ),
             ),
@@ -135,10 +160,15 @@ class _MainShellState extends State<MainShell> {
         actions: [
           IconButton(
             tooltip: 'Ask CreditPilot AI',
-            icon: const Icon(Icons.auto_awesome_outlined,
-                color: AppTheme.brandBlue),
-            onPressed: () => Navigator.of(context).push(MaterialPageRoute<void>(
-                builder: (_) => const CreditPilotChatScreen())),
+            icon: const Icon(
+              Icons.auto_awesome_outlined,
+              color: AppTheme.brandBlue,
+            ),
+            onPressed: () => Navigator.of(context).push(
+              MaterialPageRoute<void>(
+                builder: (_) => const CreditPilotChatScreen(),
+              ),
+            ),
           ),
           if (_hasJoint)
             IconButton(
@@ -146,8 +176,10 @@ class _MainShellState extends State<MainShell> {
               icon: Badge(
                 isLabelVisible: _notificationCount > 0,
                 label: Text('$_notificationCount'),
-                child: const Icon(Icons.notifications_none_outlined,
-                    color: AppTheme.brandNavy),
+                child: const Icon(
+                  Icons.notifications_none_outlined,
+                  color: AppTheme.brandNavy,
+                ),
               ),
               onPressed: () => _onTabTapped(3),
             ),
@@ -160,18 +192,23 @@ class _MainShellState extends State<MainShell> {
             },
             itemBuilder: (context) => [
               PopupMenuItem(
-                  enabled: false,
-                  child: Text(AuthSession.instance.profile?.email ??
+                enabled: false,
+                child: Text(
+                  AuthSession.instance.profile?.email ??
                       AuthSession.instance.profile?.displayName ??
-                      'Signed in')),
+                      'Signed in',
+                ),
+              ),
               const PopupMenuDivider(),
               const PopupMenuItem(
                 value: 'logout',
-                child: Row(children: [
-                  Icon(Icons.logout, size: 18),
-                  SizedBox(width: 10),
-                  Text('Log out'),
-                ]),
+                child: Row(
+                  children: [
+                    Icon(Icons.logout, size: 18),
+                    SizedBox(width: 10),
+                    Text('Log out'),
+                  ],
+                ),
               ),
             ],
             child: Padding(
@@ -184,9 +221,10 @@ class _MainShellState extends State<MainShell> {
                       .substring(0, 1)
                       .toUpperCase(),
                   style: const TextStyle(
-                      fontSize: 13,
-                      fontWeight: FontWeight.w800,
-                      color: AppTheme.brandNavy),
+                    fontSize: 13,
+                    fontWeight: FontWeight.w800,
+                    color: AppTheme.brandNavy,
+                  ),
                 ),
               ),
             ),
@@ -209,10 +247,14 @@ class _MainShellState extends State<MainShell> {
         backgroundColor: Colors.white,
         selectedItemColor: AppTheme.brandBlue,
         unselectedItemColor: AppTheme.textMuted,
-        selectedLabelStyle:
-            const TextStyle(fontWeight: FontWeight.w700, fontSize: 10),
-        unselectedLabelStyle:
-            const TextStyle(fontWeight: FontWeight.w600, fontSize: 10),
+        selectedLabelStyle: const TextStyle(
+          fontWeight: FontWeight.w700,
+          fontSize: 10,
+        ),
+        unselectedLabelStyle: const TextStyle(
+          fontWeight: FontWeight.w600,
+          fontSize: 10,
+        ),
         items: [
           const BottomNavigationBarItem(
             icon: Icon(Icons.home_outlined),

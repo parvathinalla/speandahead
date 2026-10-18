@@ -31,15 +31,16 @@ def test_catalog_has_500_diverse_complete_profiles(tmp_path):
     for (raw,) in rows:
         profile = json.loads(raw)
         personas.add(profile["persona"])
-        assert len(profile["accounts"]) in (6, 7, 8)
-        assert len(profile["app_scenario"]) in (2, 3, 4)
+        assert len(profile["accounts"]) == 10
+        assert len(profile["app_scenario"]) == 6
         assert 12 <= len(profile["app_bills"]) <= 25
         assert len(profile["transactions"]) >= 93
         assert "password" not in raw.lower()
         assert "email" not in raw.lower()
         assert "ssn" not in raw.lower()
         names = {card["display_name"] for card in profile["app_scenario"].values()}
-        assert len(names) >= 2
+        assert len(names) == 6
+        assert "Horizon Flight Reserve" in names
         assert all(name not in ("Card A", "Card B") for name in names)
         identities.extend(profile["ids"]["accounts"].values())
         descriptions.add(tuple(sorted(names)))
