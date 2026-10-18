@@ -28,6 +28,8 @@ from finance_engine import (
 )
 import synthetic_bank as demo_bank
 from tigerdata_store import TigerDataStore
+from agent_memory import AgentMemory
+from agent_service import ask_gemini, snapshot as agent_snapshot
 
 ROOT = Path(__file__).resolve().parent
 load_dotenv(ROOT / ".env")
@@ -88,6 +90,15 @@ def tiger_store() -> TigerDataStore:
 
 def using_tigerdata() -> bool:
     return DATA_MODE == "synthetic" and DEMO_STORE == "tigerdata"
+
+
+@lru_cache(maxsize=1)
+def agent_memory() -> AgentMemory:
+    # Independent of whether Nessie or a synthetic portfolio supplies data.
+    pg_url = os.getenv("TIGERDATA_DATABASE_URL", "").strip() or None
+    store = AgentMemory(ROOT / "private" / "agent_memory.sqlite3", pg_url)
+    store.init()
+    return store
 
 
 def db():
@@ -1030,6 +1041,93 @@ async def integrated_decision(body: PurchaseDecision, request: Request, user=Dep
             account_amount(a["checking"]), account_amount(a["savings"]),
             f["total_bills_due"], body.emergency_cost, 300)
     return result
+
+
+# Personalized AI agent. Gemini never owns balances or long-term storage.
+# Memory is strictly opt-in, keyed by the Auth0-verified subject only.
+class MemoryConsent(BaseModel):
+    enabled: bool
+
+
+class MemoryNote(BaseModel):
+    note: str = Field(..., min_length=3, max_length=350)
+
+
+class AgentChatRequest(BaseModel):
+    message: str = Field(..., min_length=2, max_length=1300)
+
+
+@app.get("/api/agent/settings")
+def ai_memory_settings(user=Depends(actor)):
+    repo = agent_memory()
+    enabled = repo.enabled(user)
+    return {"memory_enabled": enabled, "storage": repo.mode,
+            "note_count": len(repo.memories(user)) if enabled else 0,
+            "user_can_delete": True,
+            "source_of_banking_balances": "nessie_sandbox" if DATA_MODE == "nessie" else demo_bank.DATA_SOURCE}
+
+
+@app.post("/api/agent/settings")
+def ai_memory_consent(body: MemoryConsent, user=Depends(actor)):
+    return agent_memory().set_enabled(user, body.enabled)
+
+
+@app.get("/api/agent/memories")
+def ai_get_memories(user=Depends(actor)):
+    repo = agent_memory()
+    return {"memory_enabled": repo.enabled(user), "memories": repo.memories(user)}
+
+
+@app.post("/api/agent/memories")
+def ai_save_memory(body: MemoryNote, user=Depends(actor)):
+    try:
+        item = agent_memory().remember(user, str(uuid4()), body.note.strip())
+        return {"memory": item, "saved": True}
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from None
+
+
+@app.post("/api/agent/memories/{memory_id}/delete")
+def ai_delete_memory(memory_id: str, user=Depends(actor)):
+    if len(memory_id) > 100:
+        raise HTTPException(422, "Invalid memory id")
+    removed = agent_memory().remove(user, memory_id)
+    if not removed:
+        raise HTTPException(404, "Memory not found for this account")
+    return {"deleted": True}
+
+
+@app.post("/api/agent/memories/clear")
+def ai_clear_memory(user=Depends(actor)):
+    return agent_memory().clear(user)
+
+
+@app.get("/api/agent/history")
+def ai_history(user=Depends(actor)):
+    repo = agent_memory()
+    return {"memory_enabled": repo.enabled(user), "history": repo.history(user)}
+
+
+@app.post("/api/agent/chat")
+async def ai_agent_chat(body: AgentChatRequest, request: Request, user=Depends(actor)):
+    # Never accept balances, accounts, customer IDs or memory owner in the
+    # request body. Fetch the user's own authorized sandbox accounts directly.
+    m = manifest(user)
+    a = await accounts(gateway(request), m)
+    verified_context = agent_snapshot(a, m, forecast_from(a, m), card_rules(m, a))
+    repo = agent_memory()
+    opted_in = repo.enabled(user)
+    history = repo.history(user) if opted_in else []
+    notes = repo.memories(user) if opted_in else []
+    response, ai_used = await ask_gemini(
+        body.message.strip(), verified_context, notes, history)
+    if ai_used and opted_in:
+        # Store only authenticated user's messages. Disable/delete revokes.
+        repo.append(user, "user", body.message.strip())
+        repo.append(user, "assistant", response)
+    return {"response": response, "ai_used": ai_used,
+            "memory_enabled": opted_in, "bank_data_source": verified_context["source"],
+            "banking_is_sandbox": True, "context_source": "server_verified"}
 
 
 class ExplainRequest(BaseModel):
