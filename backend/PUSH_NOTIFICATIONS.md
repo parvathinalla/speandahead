@@ -2,21 +2,19 @@
 
 CreditPilot uses Firebase Cloud Messaging (FCM) for the daily seven-day cashflow warning. The backend checks each registered user's upcoming bills after the configured local hour. It sends nothing when checking funds cover the forecast. It records a delivery before another cycle can notify that user again on the same day.
 
+The repository is connected to Firebase project `creditpilot-ai-rohith-2026`.
+Its registered apps use Android package `com.example.creditpilot_mobile` and
+iOS bundle ID `com.example.creditpilotMobile`.
+
 The phone asks for notification permission after a successful Auth0 login. Tapping a cashflow notification opens the app on **Cashflow & Bills**, where the forecast offers **Move money from savings** and **Request money from a contact**.
 
 ## Firebase setup
 
 1. Create Android and iOS apps in one Firebase project. Their package IDs must match the release IDs configured for this Flutter app.
-2. Give the Flutter build these public Firebase client values:
-
-   ```text
-   --dart-define=FIREBASE_API_KEY=...
-   --dart-define=FIREBASE_APP_ID=...
-   --dart-define=FIREBASE_MESSAGING_SENDER_ID=...
-   --dart-define=FIREBASE_PROJECT_ID=...
-   ```
-
-   Android and iOS Firebase app IDs are different, so build each platform with its own `FIREBASE_APP_ID`. These identifiers configure the client; the server credential below is private.
+2. The platform client files are committed at `android/app/google-services.json`
+   and `ios/Runner/GoogleService-Info.plist`. Firebase documents these client
+   identifiers as non-secret configuration. The backend credential below is
+   private and must never be committed.
 
 3. Create a Firebase service account for the backend and point Application Default Credentials to the downloaded JSON file. Keep the file outside the repository:
 

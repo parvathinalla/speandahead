@@ -66,8 +66,6 @@ app.*.map.json
 *.pem
 *.p12
 *.pfx
-**/google-services.json
-**/GoogleService-Info.plist
 *service-account*.json
 
 # Generated Nessie sandbox IDs and local seeding state

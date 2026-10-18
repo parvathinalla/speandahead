@@ -13,12 +13,6 @@ class PushNotificationService {
   PushNotificationService._();
   static final instance = PushNotificationService._();
 
-  static const _apiKey = String.fromEnvironment('FIREBASE_API_KEY');
-  static const _appId = String.fromEnvironment('FIREBASE_APP_ID');
-  static const _senderId =
-      String.fromEnvironment('FIREBASE_MESSAGING_SENDER_ID');
-  static const _projectId = String.fromEnvironment('FIREBASE_PROJECT_ID');
-
   final _cashflowOpens = StreamController<void>.broadcast();
   Stream<void> get cashflowOpens => _cashflowOpens.stream;
 
@@ -31,24 +25,11 @@ class PushNotificationService {
       !kIsWeb &&
       (defaultTargetPlatform == TargetPlatform.android ||
           defaultTargetPlatform == TargetPlatform.iOS);
-  bool get _configured =>
-      _apiKey.isNotEmpty &&
-      _appId.isNotEmpty &&
-      _senderId.isNotEmpty &&
-      _projectId.isNotEmpty;
-
   Future<void> initialize() async {
-    if (!_supported || !_configured) return;
+    if (!_supported) return;
     try {
       if (Firebase.apps.isEmpty) {
-        await Firebase.initializeApp(
-          options: const FirebaseOptions(
-            apiKey: _apiKey,
-            appId: _appId,
-            messagingSenderId: _senderId,
-            projectId: _projectId,
-          ),
-        );
+        await Firebase.initializeApp();
       }
       _messaging = FirebaseMessaging.instance;
       await _messaging!.setForegroundNotificationPresentationOptions(
