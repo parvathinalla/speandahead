@@ -19,4 +19,4 @@ jobs:
       - name: Install backend dependencies
         run: pip install -r backend/requirements-dev.txt
       - name: Run finance and API tests
-        run: PYTHONPATH=backend pytest -q backend/tests
+        run: PYTHONPATH=. pytest -q backend/tests
