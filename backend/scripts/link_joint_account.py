@@ -56,6 +56,8 @@ if __name__ == '__main__':
     p.add_argument('--name', default='Joint checking')
     p.add_argument('--recipients', type=Path, required=True)
     args = p.parse_args()
+    if main.JOINT_STORE == 'tigerdata':
+        main.joint_pg_store().initialize()
     connection = main.joint_db()
     try:
         provision(connection, args.account_id, args.primary_sub, args.dependent_sub,
