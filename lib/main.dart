@@ -1,3 +1,4 @@
+
 import 'package:flutter/material.dart';
 
 import 'auth/auth_session.dart';
@@ -6,10 +7,8 @@ import 'screens/main_shell.dart';
 import 'screens/welcome_screen.dart';
 import 'theme/app_theme.dart';
 
-void main() async {
+void main() {
   WidgetsFlutterBinding.ensureInitialized();
-  // Initialize with verified demo user profile for immediate exploratory access
-  await AuthService.instance.loginWithAuth0(profileId: "alex_smith");
   runApp(const CreditPilotApp());
 }
 
@@ -18,7 +17,7 @@ class CreditPilotApp extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return MaterialApp.router(
+    return MaterialApp(
       title: 'CreditPilot AI',
       debugShowCheckedModeBanner: false,
       theme: AppTheme.lightTheme,
@@ -47,17 +46,23 @@ class _AuthGateState extends State<AuthGate> {
       animation: AuthSession.instance,
       builder: (context, _) {
         final session = AuthSession.instance;
+
         if (session.initializing) {
           return const Scaffold(
-            body: Center(child: CircularProgressIndicator()),
+            body: Center(
+              child: CircularProgressIndicator(),
+            ),
           );
         }
+
         if (!session.signedIn) {
           return const WelcomeScreen();
         }
+
         if (!session.sandboxLinked) {
           return const AccountOnboardingScreen();
         }
+
         return const MainShell();
       },
     );
