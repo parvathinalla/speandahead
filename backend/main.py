@@ -7,6 +7,7 @@ import asyncio
 import hashlib
 from datetime import date, timedelta
 from decimal import Decimal
+from functools import lru_cache
 import json
 import os
 from pathlib import Path
@@ -80,6 +81,26 @@ def init_db():
     connection.close()
 
 
+@app.middleware("http")
+async def security_headers(request: Request, call_next):
+    response = await call_next(request)
+    if request.url.path.startswith("/api/"):
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["Pragma"] = "no-cache"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    response.headers["X-Frame-Options"] = "DENY"
+    return response
+
+
+@lru_cache(maxsize=8)
+def auth0_jwks(domain: str):
+    # Reuse Auth0 JWKS cache instead of fetching its public keys per request.
+    return jwt.PyJWKClient(
+        "https://" + domain + "/.well-known/jwks.json",
+        timeout=5, cache_jwk_set=True, lifespan=300)
+
+
 def manifest_path_for(user: str) -> Path:
     if AUTH_MODE == "demo":
         return MANIFEST
@@ -133,7 +154,7 @@ async def actor(authorization: Optional[str] = Header(None),
     token = authorization.split(" ", 1)[1]
     try:
         # JWKS are validated by PyJWT. Blocking network work stays off the event loop.
-        jwks = jwt.PyJWKClient("https://" + domain + "/.well-known/jwks.json", timeout=5)
+        jwks = auth0_jwks(domain)
         signing_key = await asyncio.to_thread(jwks.get_signing_key_from_jwt, token)
         claims = jwt.decode(token, signing_key.key, algorithms=["RS256"],
                             audience=audience, issuer="https://" + domain + "/",
