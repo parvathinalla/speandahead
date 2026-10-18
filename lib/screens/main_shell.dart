@@ -6,6 +6,7 @@ import 'cards_screen.dart';
 import 'autopay_screen.dart';
 import 'joint_screen.dart';
 import 'emergency_screen.dart';
+import 'creditpilot_chat_screen.dart';
 
 class MainShell extends StatefulWidget {
   const MainShell({super.key});
@@ -53,6 +54,14 @@ class _MainShellState extends State<MainShell> {
           ],
         ),
         actions: [
+          IconButton(
+            tooltip: 'Ask CreditPilot AI',
+            icon: const Icon(Icons.auto_awesome_outlined,
+                color: AppTheme.brandBlue),
+            onPressed: () => Navigator.of(context).push(
+              MaterialPageRoute<void>(
+                builder: (_) => const CreditPilotChatScreen())),
+          ),
           IconButton(
             icon: Stack(
               children: [
