@@ -117,3 +117,9 @@ The final backend regression suite passed 187 tests; Flutter passed 13 tests. Th
 ```powershell
 .\.venv\Scripts\python.exe backend/scripts/verify_demo_history.py
 ```
+
+## Team integration — 2026-10-18
+
+Merged origin/main at 398e6fe into the TigerData/Nessie feature branch. Main already contains Bindhu's Flutter/joint work, Rohith's finance/location/push work, and Ajit's cards/AutoPay update (eaaf4a1). Resolved three overlapping edits while retaining both the trip planner and concise advisor, live Nessie activity, the updated cashflow screen, and request-specific connection errors. Login retries cannot overlap, and connection errors no longer claim that an existing account is unlinked.
+
+Combined regression checks: 206 backend tests and 14 Flutter tests passed. No real banking transfer or notification delivery was triggered by these tests. Browser login remains a separate user-session check. Private environment settings and identity provisioning plans remain ignored by Git.

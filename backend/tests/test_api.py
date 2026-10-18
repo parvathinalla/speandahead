@@ -85,8 +85,11 @@ def test_dashboard_reads_seeded_nessie_accounts(client):
     assert response.status_code == 200, response.text
     data = response.json()
     assert len(data["accounts"]) == 6
-    assert data["bill_forecast"]["total_bills_due"] == 650
-    assert data["bill_forecast"]["shortfall_amount"] == 150
+    assert data["bill_forecast"]["horizon_days"] == 7
+    assert data["bill_forecast"]["total_bills_due"] == 550
+    assert data["bill_forecast"]["shortfall_amount"] == 50
+    assert data["bill_forecast"]["first_shortfall_bill"] == "electricity"
+    assert data["bill_forecast"]["first_shortfall_amount"] == 50
     assert data["bill_forecast"]["data_sources"]["bills"] == "local_app_simulation"
 
 
@@ -96,11 +99,79 @@ def test_bill_forecast(client):
     assert response.json()["total_bills_due"] == 400
 
 
+def test_push_device_registration_and_daily_delivery(client):
+    import asyncio
+
+    token = "test-fcm-registration-token-1234567890"
+    registered = client.post(
+        "/api/push/register", json={"token": token, "platform": "android"})
+    assert registered.status_code == 200
+    sent = []
+
+    def fake_sender(tokens, title, body):
+        sent.append((tokens, title, body))
+        return {"success_count": len(tokens), "invalid_tokens": []}
+
+    first = asyncio.run(main.run_daily_push_cycle(main.app.state.nessie, fake_sender))
+    second = asyncio.run(main.run_daily_push_cycle(main.app.state.nessie, fake_sender))
+    assert first == {"users_notified": 1}
+    assert second == {"users_notified": 0}
+    assert sent[0][0] == [token]
+    assert sent[0][1] == "CreditPilot cash warning"
+    assert sent[0][2].endswith("......")
+    assert "$50.00 short" in sent[0][2]
+
+    removed = client.post(
+        "/api/push/unregister", json={"token": token, "platform": "android"})
+    assert removed.json() == {"unregistered": True}
+
+
+def test_daily_push_is_silent_without_deficit(client):
+    import asyncio
+
+    client.post("/api/push/register", json={
+        "token": "test-fcm-registration-token-1234567890",
+        "platform": "ios",
+    })
+    main.app.state.nessie.data["checking"] = 600
+    sent = []
+
+    def fake_sender(*args):
+        sent.append(args)
+        return {"success_count": 1, "invalid_tokens": []}
+
+    result = asyncio.run(main.run_daily_push_cycle(main.app.state.nessie, fake_sender))
+    assert result == {"users_notified": 0}
+    assert sent == []
+
+
 def test_card_recommendation(client):
     response = client.post("/api/cards/evaluate",
-                           json={"purchase_amount": 120, "purchase_category": "groceries"})
+                           json={"purchase_amount": 120, "purchase_category": "groceries",
+                                 "merchant_name": "Fresh Fields Market"})
     assert response.status_code == 200, response.text
     assert response.json()["recommended_card"]["card_name"] == "card_b"
+
+
+def test_card_recommendation_requires_a_real_purchase_context(client):
+    missing_merchant = client.post("/api/cards/evaluate", json={
+        "purchase_amount": 20, "purchase_category": "dining",
+    })
+    assert missing_merchant.status_code == 422
+    unknown_category = client.post("/api/cards/evaluate", json={
+        "purchase_amount": 20, "purchase_category": "restaurant-ish",
+        "merchant_name": "Corner Coffee",
+    })
+    assert unknown_category.status_code == 422
+
+
+def test_nearby_merchants_has_safe_manual_fallback_without_places_key(client):
+    response = client.post("/api/locations/nearby", json={
+        "latitude": 40.7128, "longitude": -74.0060,
+    })
+    assert response.status_code == 200
+    assert response.json()["configured"] is False
+    assert response.json()["places"] == []
 
 
 def test_autopay_guards_against_exhausting_bill_money(client):
@@ -110,12 +181,19 @@ def test_autopay_guards_against_exhausting_bill_money(client):
     assert data["suggested_paydown_amount"] == 460
     assert data["recommended_payment_amount"] == 0
     assert data["auto_execution"] is False
+    assert data["early_payment_date"] <= data["estimated_statement_close"]
+    assert data["estimated_payment_due_date"] > data["estimated_statement_close"]
+    assert len(data["timeline"]) == 3
+    assert len(data["notification_plan"]) == 3
 
 
-def test_autopay_plan_refuses_infeasible_payment(client):
+def test_autopay_plan_can_schedule_reminder_without_unsafe_payment(client):
     response = client.post("/api/autopay/plans",
                            json={"target_utilization_pct": 29, "confirmed": True})
-    assert response.status_code == 409
+    assert response.status_code == 200
+    assert response.json()["payment_amount"] == 0
+    assert response.json()["status"] == "statement_guard_active"
+    assert len(response.json()["notification_plan"]) == 3
 
 
 def test_emergency_gap(client):
@@ -123,6 +201,57 @@ def test_emergency_gap(client):
                            json={"emergency_cost": 1000, "safety_buffer": 300})
     assert response.status_code == 200
     assert response.json()["potential_gap"] == 250
+
+
+def test_hurricane_simulation_uses_region_and_budget_then_deduplicates_push(client):
+    response = client.post("/api/emergency/hurricane/subscribe", json={
+        "latitude": 29.65,
+        "longitude": -82.32,
+        "safety_buffer": 300,
+    })
+    assert response.status_code == 200, response.text
+    data = response.json()
+    assert data["scenario"] == "hurricane_budget_simulation"
+    assert data["region"] == "Florida"
+    assert data["estimated_emergency_cost"] == 850
+    assert data["protected_committed_bills"] == 650
+    assert data["usable_cash_buffer"] == 750
+    assert data["potential_gap"] == 100
+    assert "latitude" not in data and "longitude" not in data
+    saved = client.get("/api/emergency/hurricane")
+    assert saved.status_code == 200
+    assert saved.json()["alert_subscribed"] is True
+    assert saved.json()["region"] == "Florida"
+
+    connection = main.db()
+    try:
+        connection.execute(
+            "INSERT INTO push_devices(token,owner,platform) VALUES (?,?,?)",
+            ("test-device-token-1234567890", "demo-sarah", "android"),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    sent = []
+
+    def sender(tokens, title, body):
+        sent.append((tokens, title, body))
+        return {"success_count": 1, "invalid_tokens": []}
+
+    import asyncio
+    first = asyncio.run(main.run_hurricane_push_cycle(main.app.state.nessie, sender))
+    second = asyncio.run(main.run_hurricane_push_cycle(main.app.state.nessie, sender))
+    assert first == {"users_notified": 1}
+    assert second == {"users_notified": 0}
+    assert sent[0][1] == "Hurricane budget simulation"
+    assert "$100.00 short" in sent[0][2]
+
+    disabled = client.post("/api/emergency/hurricane/unsubscribe")
+    assert disabled.status_code == 200
+    assert client.get("/api/emergency/hurricane").json() == {
+        "alert_subscribed": False
+    }
 
 
 def test_legacy_joint_partner_routes_are_unavailable(client):
@@ -149,10 +278,59 @@ def test_transfer_requires_confirmation_and_is_idempotent(client):
 def test_integrated_purchase_decision(client):
     r = client.post("/api/decisions/purchase",
                     json={"purchase_amount": 120, "purchase_category": "groceries",
+                          "merchant_name": "Fresh Fields Market",
                           "emergency_cost": 1000})
     assert r.status_code == 200, r.text
     assert r.json()["recommended_card"]["card_name"] == "card_b"
+    assert r.json()["purchase_guidance"]["verdict"] in {
+        "safe_to_spend", "caution", "consider_waiting"
+    }
+    assert r.json()["purchase_guidance"]["reasons"]
     assert r.json()["emergency_stress_test"]["potential_gap"] == 250
+
+
+def test_trip_copilot_uses_ai_for_parsing_and_backend_for_cumulative_math(
+        client, monkeypatch):
+    async def fake_extract(message, history):
+        assert "Miami" in message
+        assert history == []
+        return ({
+            "trip_title": "Miami trip",
+            "assistant_message": "I found two grocery purchases.",
+            "purchases": [
+                {"merchant_or_purpose": "Trip groceries", "category": "groceries", "amount": 120},
+                {"merchant_or_purpose": "More groceries", "category": "groceries", "amount": 120},
+            ],
+            "missing_information": [],
+        }, None)
+
+    monkeypatch.setattr(main, "extract_trip_plan", fake_extract)
+    response = client.post("/api/cards/copilot/plan", json={
+        "message": "Miami groceries cost $120 twice",
+        "history": [],
+    })
+    assert response.status_code == 200, response.text
+    data = response.json()
+    assert data["ai_used"] is True
+    assert data["calculation_source"] == "deterministic_backend"
+    assert data["summary"]["planned_spend"] == 240
+    first, second = data["recommendations"]
+    assert first["recommended_card"]["card_name"] == "card_b"
+    assert first["recommended_card"]["utilization_after_pct"] == 16
+    assert second["recommended_card"]["utilization_after_pct"] == 22
+
+
+def test_trip_copilot_does_not_fabricate_when_ai_is_unavailable(client, monkeypatch):
+    async def unavailable(message, history):
+        return None, "Gemini is not configured."
+
+    monkeypatch.setattr(main, "extract_trip_plan", unavailable)
+    response = client.post("/api/cards/copilot/plan", json={
+        "message": "Plan my trip",
+    })
+    assert response.status_code == 200
+    assert response.json()["ai_used"] is False
+    assert response.json()["recommendations"] == []
 
 
 def test_auth0_mode_rejects_missing_token(client, monkeypatch):

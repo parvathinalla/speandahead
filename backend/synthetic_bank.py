@@ -20,7 +20,7 @@ from decimal import Decimal
 from typing import Optional
 
 CATALOG_SIZE = 500
-CATALOG_VERSION = 1
+CATALOG_VERSION = 3
 DATA_SOURCE = "synthetic_banking_demo"
 
 # All institutions, products, offers, APRs and rewards below are fictional.
@@ -41,7 +41,58 @@ CARD_PRODUCTS = (
      {"groceries": .025, "gas": .025, "dining": .025, "other": .015}),
     ("Willow Cash Preferred", "Willow Financial", "Visa",
      {"groceries": .05, "streaming": .06, "dining": .02, "other": .01}),
+    ("Horizon Flight Reserve", "Horizon Bank", "Visa Signature",
+     {"flights": .06, "travel": .04, "dining": .02, "transit": .02,
+      "other": .01}),
+    ("Harvest Grocery Max", "Harbor Community Bank", "Mastercard",
+     {"groceries": .05, "streaming": .03, "gas": .02, "other": .01}),
+    ("Cedar Night & Dine", "Cedar Credit Union", "Visa",
+     {"dining": .05, "entertainment": .04, "travel": .02, "other": .01}),
+    ("Meridian Everyday 2X", "Meridian Credit Union", "Mastercard",
+     {"other": .02, "shopping": .02, "gas": .02, "transit": .02,
+      "groceries": .02, "dining": .02}),
 )
+
+NEW_CARD_NAMES = (
+    "Horizon Flight Reserve",
+    "Harvest Grocery Max",
+    "Cedar Night & Dine",
+    "Meridian Everyday 2X",
+)
+
+CARD_PRESENTATION = {
+    "Harbor Everyday Cash": ("emerald", "4% groceries and 2% gas or dining"),
+    "Summit Travel Miles": ("midnight", "5% travel and 3% dining"),
+    "Cedar Dining Rewards": ("plum", "4% dining and 3% groceries"),
+    "Northstar Student Cash": ("sky", "3% groceries or gas with simple cash back"),
+    "Pioneer Fuel & Transit": ("copper", "5% gas and 4% transit"),
+    "Bluehaven Everyday Plus": ("ocean", "3% groceries, travel and dining"),
+    "Meridian Flexible Rewards": ("graphite", "2.5% across common daily categories"),
+    "Willow Cash Preferred": ("rose", "6% streaming and 5% groceries"),
+    "Horizon Flight Reserve": ("aurora", "6% flights and 4% broader travel"),
+    "Harvest Grocery Max": ("forest", "5% groceries and 3% streaming"),
+    "Cedar Night & Dine": ("violet", "5% dining and 4% entertainment"),
+    "Meridian Everyday 2X": ("slate", "2% on everyday purchases"),
+}
+
+NEW_CARD_FINANCIAL_PROFILES = {
+    "Horizon Flight Reserve": ((10000, 12000, 18000), (.03, .12)),
+    "Harvest Grocery Max": ((5000, 7500, 10000), (.04, .20)),
+    "Cedar Night & Dine": ((3500, 5000, 7500), (.04, .22)),
+    "Meridian Everyday 2X": ((5000, 7500, 10000), (.04, .20)),
+}
+
+
+def _presentation(product: str) -> tuple[str, str]:
+    return CARD_PRESENTATION.get(product, ("ocean", "Everyday card rewards"))
+
+
+def _financial_profile(product: str, rng: random.Random) -> tuple[int, float]:
+    limits, utilization_range = NEW_CARD_FINANCIAL_PROFILES.get(
+        product, ((2500, 3500, 5000, 7500, 10000, 12000, 18000), (.03, .88)))
+    limit = rng.choice(limits)
+    balance = _dollars(limit * rng.uniform(*utilization_range))
+    return limit, balance
 
 BILL_TEMPLATES = (
     ("Rent / mortgage", "housing", (850, 2650)),
@@ -139,19 +190,26 @@ def _make_profile(slot: int, as_of: date) -> dict:
                 _dollars(rng.uniform(150, 3500)), institution,
                 (last4_seed + 167) % 10000)
 
-    n_cards = rng.randint(2, 4)
-    selection = rng.sample(CARD_PRODUCTS, n_cards)
+    # Every new profile gets four purpose-built cards plus two varied products.
+    # This keeps category recommendations meaningful instead of allowing one
+    # high-limit card to dominate every purchase.
+    featured = [item for item in CARD_PRODUCTS if item[0] in NEW_CARD_NAMES]
+    classic = [item for item in CARD_PRODUCTS if item[0] not in NEW_CARD_NAMES]
+    selection = featured + rng.sample(classic, 2)
     for i, (product, bank, network, rates) in enumerate(selection):
         key = f"card_{i+1}"
-        limit = rng.choice((750, 1200, 1500, 2500, 3500, 5000,
-                            7500, 10000, 12000, 18000))
-        utilization = rng.uniform(.03, .88)
-        balance = _dollars(limit * utilization)
+        if product in NEW_CARD_FINANCIAL_PROFILES:
+            limit, balance = _financial_profile(product, rng)
+        else:
+            limit = rng.choice((750, 1200, 1500, 2500, 3500, 5000,
+                                7500, 10000, 12000, 18000))
+            balance = _dollars(limit * rng.uniform(.03, .88))
         statement_days = rng.randint(3, 27)
         last4 = (last4_seed + 1000 + i * 211 + slot * 3) % 10000
         add_account(key, product, "Credit Card", balance, bank, last4,
                     network=network, credit_limit=limit,
                     statement_closes_in_days=statement_days)
+        visual_theme, benefit_summary = _presentation(product)
         scenarios[key] = {
             "limit_usd": limit,
             "rewards": rates,
@@ -160,6 +218,8 @@ def _make_profile(slot: int, as_of: date) -> dict:
             "issuer": bank,
             "last4": str(last4).zfill(4),
             "network": network,
+            "visual_theme": visual_theme,
+            "benefit_summary": benefit_summary,
             "reward_rates_are_simulated": True,
         }
 
@@ -233,6 +293,82 @@ def _make_profile(slot: int, as_of: date) -> dict:
     }
 
 
+def _upgrade_profile(profile: dict, slot: int) -> bool:
+    """Add the four new products without replacing user-edited portfolio data."""
+    changed = False
+    scenarios = profile.get("app_scenario", {})
+    accounts = profile.get("accounts", {})
+    account_ids = profile.get("ids", {}).get("accounts", {})
+
+    for rule in scenarios.values():
+        theme, summary = _presentation(rule.get("display_name", ""))
+        if rule.get("visual_theme") != theme or rule.get("benefit_summary") != summary:
+            rule["visual_theme"] = theme
+            rule["benefit_summary"] = summary
+            changed = True
+
+    previous_version = int(profile.get("catalog_version", 1))
+    if previous_version < CATALOG_VERSION:
+        existing_names = {rule.get("display_name") for rule in scenarios.values()}
+        products = {item[0]: item for item in CARD_PRODUCTS}
+        rng = random.Random(812_347 + slot * 31_337)
+        next_number = 1
+        while f"card_{next_number}" in accounts:
+            next_number += 1
+        used_last4 = {str(item.get("last4", "")) for item in accounts.values()}
+
+        for product_name in NEW_CARD_NAMES:
+            if product_name in existing_names:
+                continue
+            product, bank, network, rates = products[product_name]
+            key = f"card_{next_number}"
+            next_number += 1
+            limit, balance = _financial_profile(product, rng)
+            statement_days = rng.randint(3, 27)
+            last4 = str((rng.randint(1000, 9999) + slot * 17) % 10000).zfill(4)
+            while last4 in used_last4:
+                last4 = str((int(last4) + 137) % 10000).zfill(4)
+            used_last4.add(last4)
+            identity = f"CP{slot:04d}-{key}"
+            accounts[key] = {
+                "_id": identity, "kind": key, "nickname": product,
+                "type": "Credit Card", "balance": balance,
+                "institution": bank, "last4": last4, "currency": "USD",
+                "source": DATA_SOURCE, "network": network,
+                "credit_limit": limit,
+                "statement_closes_in_days": statement_days,
+            }
+            account_ids[key] = identity
+            visual_theme, benefit_summary = _presentation(product)
+            scenarios[key] = {
+                "limit_usd": limit, "rewards": rates,
+                "statement_closes_in_days": statement_days,
+                "display_name": product, "issuer": bank, "last4": last4,
+                "network": network, "visual_theme": visual_theme,
+                "benefit_summary": benefit_summary,
+                "reward_rates_are_simulated": True,
+            }
+            changed = True
+
+        # Version 2 introduced these cards with fully random limits. Normalize
+        # only those new fictional products so their category specialties are
+        # usable for realistic purchase sizes while preserving all legacy cards.
+        if previous_version < 3:
+            for key, rule in scenarios.items():
+                product = rule.get("display_name")
+                if product not in NEW_CARD_FINANCIAL_PROFILES or key not in accounts:
+                    continue
+                limit, balance = _financial_profile(product, rng)
+                rule["limit_usd"] = limit
+                accounts[key]["credit_limit"] = limit
+                accounts[key]["balance"] = balance
+                changed = True
+
+        profile["catalog_version"] = CATALOG_VERSION
+        changed = True
+    return changed
+
+
 def initialize(conn: sqlite3.Connection, count: int = CATALOG_SIZE, as_of: Optional[date] = None) -> None:
     """Build the dataset once without overwriting claims or user changes."""
     conn.execute("""CREATE TABLE IF NOT EXISTS synthetic_profiles (
@@ -249,6 +385,16 @@ def initialize(conn: sqlite3.Connection, count: int = CATALOG_SIZE, as_of: Optio
         conn.executemany(
             "INSERT INTO synthetic_profiles(slot, payload) VALUES (?,?)", rows
         )
+    else:
+        updates = []
+        for slot, raw in conn.execute(
+                "SELECT slot, payload FROM synthetic_profiles").fetchall():
+            profile = json.loads(raw)
+            if _upgrade_profile(profile, slot):
+                updates.append((json.dumps(profile, separators=(",", ":")), slot))
+        if updates:
+            conn.executemany(
+                "UPDATE synthetic_profiles SET payload=? WHERE slot=?", updates)
     conn.commit()
 
 

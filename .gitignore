@@ -66,6 +66,7 @@ app.*.map.json
 *.pem
 *.p12
 *.pfx
+*service-account*.json
 
 # Generated Nessie sandbox IDs and local seeding state
 backend/seed_manifest.json

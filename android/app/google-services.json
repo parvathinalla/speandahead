@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "695802747514",
+    "project_id": "creditpilot-ai-rohith-2026",
+    "storage_bucket": "creditpilot-ai-rohith-2026.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:695802747514:android:e8e8dbd3aaab3ab08b79c3",
+        "android_client_info": {
+          "package_name": "com.example.creditpilot_mobile"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyD0A2HmmPOZhXQxmlKQOGvrE-TkOSVmAi4"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

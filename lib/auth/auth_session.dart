@@ -1,6 +1,7 @@
 import 'package:flutter/foundation.dart';
 
 import '../services/api_service.dart';
+import '../services/push_notification_service.dart';
 import 'auth_client.dart';
 import 'auth_client_factory.dart';
 import 'auth_config.dart';
@@ -90,6 +91,7 @@ class AuthSession extends ChangeNotifier {
       _hasJointAccount = joint['has_joint_account'] == true;
       if (!kReleaseMode) debugPrint('Auth timing: account loading ${watch.elapsedMilliseconds}ms');
       _error = null;
+      await PushNotificationService.instance.registerSignedInDevice();
     } catch (error) {
       _sandboxLinked = false;
       _hasJointAccount = false;
@@ -135,6 +137,7 @@ class AuthSession extends ChangeNotifier {
   Future<void> signOut() async {
     if (_busy) return;
     _busy = true;
+    await PushNotificationService.instance.unregisterSignedInDevice();
     // Erase user-specific visible state and bearer-token source immediately.
     _profile = null;
     _sandboxLinked = false;
