@@ -43,7 +43,7 @@ class AccountOnboardingScreen extends StatelessWidget {
               const SizedBox(height: 8),
               const Text(
                 'For security, we never expose another user’s demo bank balances '
-                'automatically after signup. An operator must provision an '
+                'automatically after login. An operator must provision an '
                 'individual fictional Nessie sandbox for your account.',
                 textAlign: TextAlign.center,
                 style: TextStyle(color: AppTheme.textSecondary, height: 1.45)),
