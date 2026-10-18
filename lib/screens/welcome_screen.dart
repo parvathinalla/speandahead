@@ -4,7 +4,7 @@ import '../auth/auth_config.dart';
 import '../auth/auth_session.dart';
 import '../theme/app_theme.dart';
 
-/// The app NEVER handles user passwords. Both buttons launch Auth0 Universal Login.
+/// The app NEVER handles user passwords. Login launches Auth0 Universal Login.
 class WelcomeScreen extends StatelessWidget {
   const WelcomeScreen({super.key});
 
@@ -71,7 +71,7 @@ class WelcomeScreen extends StatelessWidget {
                         color: AppTheme.brandNavy, fontSize: 23,
                         fontWeight: FontWeight.w800)),
                       const SizedBox(height: 6),
-                      const Text('Create an account or sign in to continue.',
+                      const Text('Already have an account? Log in to continue.',
                         style: TextStyle(color: AppTheme.textSecondary)),
                       const SizedBox(height: 22),
                       if (session.configurationError != null) ...[
@@ -103,15 +103,6 @@ class WelcomeScreen extends StatelessWidget {
                         child: Padding(
                           padding: const EdgeInsets.symmetric(vertical: 13),
                           child: Text(session.busy ? 'Please wait…' : 'Log In'),
-                        ),
-                      ),
-                      const SizedBox(height: 10),
-                      OutlinedButton(
-                        onPressed: session.busy || session.configurationError != null
-                          ? null : () => session.signIn(signUp: true),
-                        child: const Padding(
-                          padding: EdgeInsets.symmetric(vertical: 13),
-                          child: Text('Create Account'),
                         ),
                       ),
                       const SizedBox(height: 15),
