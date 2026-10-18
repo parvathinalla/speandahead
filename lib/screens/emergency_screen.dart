@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../services/api_service.dart';
@@ -20,6 +21,8 @@ class _EmergencyScreenState extends State<EmergencyScreen> {
   String? hurricaneError;
   bool loading = false;
   bool hurricaneLoading = false;
+  String hurricaneStage = '';
+  int hurricaneRequest = 0;
 
   @override
   void initState() {
@@ -69,35 +72,50 @@ class _EmergencyScreenState extends State<EmergencyScreen> {
   }
 
   Future<void> enableHurricaneSimulation() async {
+    if (hurricaneLoading) return;
+    final request = ++hurricaneRequest;
     setState(() {
       hurricaneLoading = true;
       hurricaneError = null;
+      hurricaneStage = 'Waiting for location. Allow access in your browser if prompted.';
     });
-    try {
+    Future<void> resolve() async {
       final location = await LocationService.instance.refresh();
+      if (!mounted || request != hurricaneRequest) return;
       final position = location.position;
-      if (position == null) {
-        throw ApiException(location.message);
-      }
+      if (position == null) throw ApiException(location.message);
+      setState(() => hurricaneStage = 'Location found. Calculating your simulation...');
       final response = await ApiService.subscribeHurricaneSimulation(
         latitude: position.latitude,
         longitude: position.longitude,
         safetyBuffer: buffer,
       );
-      if (mounted) {
-        setState(() {
-          hurricaneResult = response;
-          hurricaneLoading = false;
-        });
-      }
-    } catch (exception) {
-      if (mounted) {
-        setState(() {
-          hurricaneError = exception.toString();
-          hurricaneLoading = false;
-        });
+      if (mounted && request == hurricaneRequest) {
+        setState(() => hurricaneResult = response);
       }
     }
+    try {
+      await resolve().timeout(const Duration(seconds: 35));
+    } catch (exception) {
+      if (mounted && request == hurricaneRequest) {
+        setState(() => hurricaneError = exception is TimeoutException
+            ? 'The simulation took too long. Check your connection and retry.'
+            : exception.toString());
+      }
+    } finally {
+      if (mounted && request == hurricaneRequest) {
+        ++hurricaneRequest;
+        setState(() => hurricaneLoading = false);
+      }
+    }
+  }
+
+  void cancelLocationLookup() {
+    ++hurricaneRequest;
+    setState(() {
+      hurricaneLoading = false;
+      hurricaneError = 'Location lookup cancelled. You can retry when ready.';
+    });
   }
 
   Future<void> loadHurricaneSimulation() async {
@@ -315,6 +333,13 @@ class _EmergencyScreenState extends State<EmergencyScreen> {
             if (hurricaneLoading) ...[
               const SizedBox(height: 14),
               const Center(child: CircularProgressIndicator()),
+              const SizedBox(height: 10),
+              Text(hurricaneStage, textAlign: TextAlign.center),
+              if (hurricaneStage.startsWith('Waiting for location'))
+                TextButton(
+                  onPressed: cancelLocationLookup,
+                  child: const Text('Cancel location lookup'),
+                ),
             ] else if (assessment == null) ...[
               const SizedBox(height: 14),
               SizedBox(
