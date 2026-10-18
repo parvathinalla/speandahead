@@ -57,10 +57,19 @@ class TigerDataStore:
         self.Jsonb = Jsonb
 
     def connect(self):
-        # Default verify-full if URL does not specify sslmode. Never disable TLS.
-        return self.driver.connect(
-            self.url, sslmode=None if "sslmode=" in self.url else "verify-full",
-            connect_timeout=8, application_name="creditpilot-demo-sdk")
+        # Default verify-full if URL omits sslmode. Never downgrade an
+        # explicitly configured verify-ca/verify-full policy.
+        options = {"connect_timeout": 8,
+                   "application_name": "creditpilot-demo-sdk"}
+        from psycopg.conninfo import conninfo_to_dict
+        if not conninfo_to_dict(self.url).get("sslmode"):
+            options["sslmode"] = "verify-full"
+        try:
+            return self.driver.connect(self.url, **options)
+        except self.driver.Error:
+            # psycopg connection exceptions may include the original DSN.
+            raise RuntimeError("TigerData connection failed. Verify private "
+                               "credentials, network access, and TLS.") from None
 
     def initialize(self, count: int = dataset.CATALOG_SIZE) -> None:
         if count != dataset.CATALOG_SIZE:
@@ -75,14 +84,21 @@ class TigerDataStore:
             for statement in commands:
                 conn.execute(statement)
             # An existing assignment can NEVER be overwritten by an app restart.
-            rows = (
-                (slot, self.Jsonb(dataset._make_profile(slot, date.today())))
-                for slot in range(count)
-            )
-            with conn.cursor() as cur:
-                cur.executemany(
-                    "INSERT INTO cp_demo_profiles(slot,payload) VALUES(%s,%s) "
-                    "ON CONFLICT(slot) DO NOTHING", list(rows))
+            existing = conn.execute(
+                "SELECT COUNT(*) FROM cp_demo_profiles").fetchone()[0]
+            if existing < count:
+                existing_slots = {
+                    row[0] for row in conn.execute(
+                        "SELECT slot FROM cp_demo_profiles").fetchall()
+                }
+                rows = [
+                    (slot, self.Jsonb(dataset._make_profile(slot, date.today())))
+                    for slot in range(count) if slot not in existing_slots
+                ]
+                with conn.cursor() as cur:
+                    cur.executemany(
+                        "INSERT INTO cp_demo_profiles(slot,payload) VALUES(%s,%s) "
+                        "ON CONFLICT(slot) DO NOTHING", rows)
 
     @staticmethod
     def _subject(subject: str) -> None:
