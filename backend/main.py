@@ -138,6 +138,13 @@ def manifest(user: str = "demo-sarah") -> dict:
     return data
 
 
+def auth_error(code: str) -> HTTPException:
+    """Expose only safe diagnostic category in development, never token contents."""
+    if ENVIRONMENT == "development":
+        return HTTPException(401, "Invalid authentication token (" + code + ")")
+    return HTTPException(401, "Invalid or expired authentication token")
+
+
 async def actor(authorization: Optional[str] = Header(None),
                 x_demo_user: Optional[str] = Header(None)) -> str:
     if AUTH_MODE == "demo":
@@ -164,8 +171,23 @@ async def actor(authorization: Optional[str] = Header(None),
         return str(claims["sub"])
     except HTTPException:
         raise
+    except jwt.exceptions.ExpiredSignatureError:
+        raise auth_error("token_expired") from None
+    except jwt.exceptions.InvalidAudienceError:
+        raise auth_error("audience_mismatch") from None
+    except jwt.exceptions.InvalidIssuerError:
+        raise auth_error("issuer_mismatch") from None
+    except jwt.exceptions.InvalidSignatureError:
+        raise auth_error("invalid_signature") from None
+    except jwt.exceptions.PyJWKClientError:
+        raise auth_error("signing_key_unavailable") from None
+    except jwt.exceptions.DecodeError:
+        raise auth_error("malformed_or_opaque_access_token") from None
+    except jwt.exceptions.InvalidTokenError:
+        raise auth_error("invalid_jwt_claims") from None
     except Exception:
-        raise HTTPException(401, "Invalid or expired authentication token") from None
+        # Never leak credentials, token bytes, signing keys or remote URLs.
+        raise auth_error("verification_unavailable") from None
 
 
 @app.get("/api/me")
