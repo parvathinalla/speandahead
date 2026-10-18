@@ -29,6 +29,7 @@ from finance_engine import (
 import synthetic_bank as demo_bank
 from tigerdata_store import TigerDataStore
 from nessie_links import NessieLinkStore
+from joint_pg import JointPostgres
 from agent_memory import AgentMemory
 from agent_service import ask_gemini, snapshot as agent_snapshot
 
@@ -40,6 +41,7 @@ SQLITE = Path(os.getenv("DB_PATH", str(ROOT / "creditpilot.sqlite3")))
 AUTH_MODE = os.getenv("AUTH_MODE", "demo").strip().lower()
 DATA_MODE = os.getenv("DEMO_DATA_MODE", "synthetic" if AUTH_MODE == "auth0" else "nessie").strip().lower()
 DEMO_STORE = os.getenv("DEMO_STORE", "sqlite").strip().lower()
+JOINT_STORE = os.getenv("JOINT_STORE", "sqlite").strip().lower()
 ENVIRONMENT = os.getenv("APP_ENV", "development").strip().lower()
 TENANTS_DIR = Path(os.getenv("TENANT_MANIFEST_DIR", str(ROOT / "private" / "tenants")))
 PAYMENT_MODE = os.getenv("PAYMENT_MODE", "simulate").strip().lower()
@@ -51,6 +53,13 @@ if DATA_MODE not in ("nessie", "synthetic"):
     raise RuntimeError("DEMO_DATA_MODE must be nessie or synthetic")
 if DEMO_STORE not in ("sqlite", "tigerdata"):
     raise RuntimeError("DEMO_STORE must be sqlite or tigerdata")
+if JOINT_STORE not in ("sqlite", "tigerdata"):
+    raise RuntimeError("JOINT_STORE must be sqlite or tigerdata")
+if JOINT_STORE == "tigerdata" and (
+    AUTH_MODE != "auth0" or DATA_MODE != "nessie" or
+    not os.getenv("TIGERDATA_DATABASE_URL")
+):
+    raise RuntimeError("JOINT_STORE=tigerdata requires Auth0, Nessie mode and TigerData URL")
 if DEMO_STORE == "tigerdata":
     if AUTH_MODE != "auth0":
         raise RuntimeError("TigerData backend requires Auth0 authentication")
@@ -104,6 +113,16 @@ def nessie_links() -> NessieLinkStore:
 
 
 @lru_cache(maxsize=1)
+def joint_pg_store() -> JointPostgres:
+    return JointPostgres(os.getenv("TIGERDATA_DATABASE_URL", ""))
+
+
+def joint_db():
+    """Use persistent TigerData for Nessie joint permissions when explicitly enabled."""
+    return joint_pg_store().connect() if JOINT_STORE == "tigerdata" else db()
+
+
+@lru_cache(maxsize=1)
 def agent_memory() -> AgentMemory:
     # Independent of whether Nessie or a synthetic portfolio supplies data.
     pg_url = os.getenv("TIGERDATA_DATABASE_URL", "").strip() or None
@@ -135,6 +154,8 @@ def init_db():
                 demo_bank.initialize(connection)
         if using_nessie_links():
             nessie_links().initialize()
+        if JOINT_STORE == "tigerdata":
+            joint_pg_store().initialize()
     finally:
         connection.close()
 
@@ -831,7 +852,7 @@ async def evaluate_emergency(body: EmergencyRequest, request: Request, user=Depe
 # Legacy partner routes are intentionally removed: only verified membership and
 # primary/dependent roles authorize the joint payment workflow.
 from joint_accounts import create_router as joint_router
-app.include_router(joint_router(db, actor, gateway, lambda:
+app.include_router(joint_router(joint_db, actor, gateway, lambda:
     AUTH_MODE == "auth0" and DATA_MODE == "nessie" and PAYMENT_MODE == "nessie"))
 
 
