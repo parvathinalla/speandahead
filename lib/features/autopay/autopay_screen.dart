@@ -15,15 +15,15 @@ class AutoPayScreen extends StatelessWidget {
       builder: (context, _) {
         final state = AppState.instance;
 
-        const limit = 1000.0;
-        const balance = 750.0;
-        const checking = 600.0;
-        const bills = 250.0;
-        const reserve = 100.0;
-        final targetUtil = state.targetUtilizationPct;
-        final theoreticalPaydown = state.theoreticalPaydown; // $460
-        final safePayment = state.maxSafePaymentToday; // $250
-        final targetReachable = state.targetReachable; // false
+        // const limit = 1000.0;
+        // const balance = 750.0;
+        // const checking = 600.0;
+        // const bills = 250.0;
+        // const reserve = 100.0;
+        // final targetUtil = state.targetUtilizationPct;
+        // final theoreticalPaydown = state.theoreticalPaydown; // $460
+        // final safePayment = state.maxSafePaymentToday; // $250
+        // final targetReachable = state.targetReachable; // false
 
         return Scaffold(
           appBar: AppBar(
