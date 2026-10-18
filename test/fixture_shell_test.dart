@@ -1,0 +1,36 @@
+import 'package:flutter/material.dart';
+import 'package:flutter_test/flutter_test.dart';
+
+import 'package:creditpilot_mobile/screens/fixture_shell.dart';
+import 'package:creditpilot_mobile/core/auth/auth_service.dart';
+import 'package:creditpilot_mobile/app/theme/app_theme.dart';
+
+void main() {
+  setUp(() async {
+    await AuthService.instance.loginWithAuth0(profileId: "alex_smith");
+  });
+
+  testWidgets('CreditPilotApp smoke test with 5 bottom tabs', (WidgetTester tester) async {
+    await tester.pumpWidget(
+  MaterialApp(
+    theme: AppTheme.lightTheme,
+    home: const FixtureShell(),
+  ),
+);
+await tester.pumpAndSettle();
+
+    // Verify FixtureShell is mounted
+    expect(find.byType(FixtureShell), findsOneWidget);
+    expect(find.byType(BottomNavigationBar), findsOneWidget);
+
+    // Verify 5 bottom tabs: Home, Bills, Cards, Joint, Emergency
+    expect(find.text('Home'), findsWidgets);
+    expect(find.text('Bills'), findsWidgets);
+    expect(find.text('Cards'), findsWidgets);
+    expect(find.text('Joint'), findsWidgets);
+    expect(find.text('Emergency'), findsWidgets);
+
+    // Verify Brand title RichText widget exists
+    expect(find.byType(RichText), findsWidgets);
+  });
+}
