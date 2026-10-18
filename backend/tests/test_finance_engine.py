@@ -44,7 +44,7 @@ def test_recurring_bills_roll_forward_in_future_months():
         "source": "synthetic_banking_demo",
     }
     assert next_payment_date(bill, start) == date(2026, 10, 30)
-    x = forecast(1000, 200, [bill], horizon_days=95, today=start)
+    x = forecast(1000, 200, [bill], horizon_days=110, today=start)
     assert [b["due_date"] for b in x["upcoming_bills"]] == [
         "2026-10-30", "2026-11-30", "2026-12-30", "2027-01-30",
     ]
