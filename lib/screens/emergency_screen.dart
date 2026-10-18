@@ -105,7 +105,7 @@ class _EmergencyScreenState extends State<EmergencyScreen> {
           const SizedBox(height: 12),
           Card(child: Column(children: [
             item('Checking + Savings', result!['total_available_funds']),
-            item('Protected upcoming bills', result!['protected_committed_bills']),
+            item('Upcoming bills', result!['protected_committed_bills']),
             item('Safety reserve', result!['safety_buffer']),
             item('Usable cash', result!['usable_cash_buffer']),
             item('Estimated emergency cost', result!['estimated_emergency_cost']),

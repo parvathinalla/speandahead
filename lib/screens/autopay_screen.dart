@@ -202,7 +202,7 @@ class _AutoPayScreenState extends State<AutoPayScreen> {
               const SizedBox(height: 12),
               row('Needed for target', dollars(d['suggested_paydown_amount'])),
               row('Checking after funding assumption', dollars(d['checking_funds'])),
-              row('Upcoming bills protected', dollars(d['upcoming_bills_2weeks'])),
+              row('Upcoming bills', dollars(d['upcoming_bills_2weeks'])),
               row('Safety buffer', dollars(d['safety_buffer'])),
               row('Safe payment amount', dollars(d['recommended_payment_amount'])),
               row('Projected utilization', d['projected_utilization_pct'].toString() + '%'),
