@@ -570,6 +570,54 @@ def joint_decision(proposal_id: str, body: JointDecision, user=Depends(actor)):
         connection.close()
 
 
+@app.get("/api/joint/invitations")
+def joint_invitations(user=Depends(actor)):
+    # A new Auth0 user may approve an invitation even before linking
+    # their own fictional bank sandbox.
+    connection = db()
+    try:
+        rows = connection.execute(
+            "SELECT id, owner, status, payload, created_at FROM actions "
+            "WHERE action_type='joint_proposal' AND status='awaiting_partner'"
+        ).fetchall()
+        results = []
+        for row in rows:
+            payload = json.loads(row["payload"])
+            if payload.get("partner_sub") != user:
+                continue
+            evaluation = payload.get("evaluation", {})
+            results.append({
+                "proposal_id": row["id"],
+                "merchant": evaluation.get("merchant", ""),
+                "amount": evaluation.get("amount", 0),
+                "status": row["status"],
+                "created_at": row["created_at"],
+                "scope": "app_simulation",
+            })
+        return {"invitations": results}
+    finally:
+        connection.close()
+
+
+@app.get("/api/joint/proposals")
+def my_joint_proposals(user=Depends(actor)):
+    connection = db()
+    try:
+        rows = connection.execute(
+            "SELECT id, status, payload, created_at FROM actions "
+            "WHERE action_type='joint_proposal' AND owner=? "
+            "ORDER BY created_at DESC LIMIT 100", (user,)
+        ).fetchall()
+        return {"proposals": [
+            {"proposal_id": r["id"], "status": r["status"],
+             "amount": json.loads(r["payload"]).get("evaluation", {}).get("amount"),
+             "created_at": r["created_at"]}
+            for r in rows
+        ]}
+    finally:
+        connection.close()
+
+
 class TransferRequest(BaseModel):
     amount: float = Field(..., gt=0, le=100000)
     idempotency_key: str = Field(..., min_length=8, max_length=100)
