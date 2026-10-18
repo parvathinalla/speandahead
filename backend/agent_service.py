@@ -34,7 +34,6 @@ def snapshot(accounts: dict, scenario: dict, bill_forecast: dict, cards: dict) -
         present.append({
             "type": item.get("type", key),
             "role": key,
-            "label": str(item.get("nickname", key))[:80],
             "balance_usd": round(float(item.get("balance", 0)), 2),
         })
     card_summary = []
