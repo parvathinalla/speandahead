@@ -70,8 +70,11 @@ def test_dashboard_reads_seeded_nessie_accounts(client):
     assert response.status_code == 200, response.text
     data = response.json()
     assert len(data["accounts"]) == 6
-    assert data["bill_forecast"]["total_bills_due"] == 650
-    assert data["bill_forecast"]["shortfall_amount"] == 150
+    assert data["bill_forecast"]["horizon_days"] == 7
+    assert data["bill_forecast"]["total_bills_due"] == 550
+    assert data["bill_forecast"]["shortfall_amount"] == 50
+    assert data["bill_forecast"]["first_shortfall_bill"] == "electricity"
+    assert data["bill_forecast"]["first_shortfall_amount"] == 50
     assert data["bill_forecast"]["data_sources"]["bills"] == "local_app_simulation"
 
 

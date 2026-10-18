@@ -13,6 +13,9 @@ def test_bill_shortfall():
     assert r["total_bills_due"] == 650
     assert r["shortfall_amount"] == 150
     assert r["suggested_savings_transfer"] == 150
+    assert r["first_shortfall_bill"] == "Power"
+    assert r["first_shortfall_date"] == (today+timedelta(days=7)).isoformat()
+    assert r["first_shortfall_amount"] == 50
 
 def test_autopay_protected_funds():
     r = autopay_preview(750, 1000, 29, 600, 250, 100)

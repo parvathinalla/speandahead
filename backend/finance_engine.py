@@ -75,11 +75,18 @@ def forecast(checking, savings, bills, horizon_days=14, reserve=0, today=None):
     cash = money(checking)
     timeline = [{"date": today.isoformat(), "balance": amount(cash), "event": "Today"}]
     min_cash = cash
+    first_shortfall = None
     for bill in normalized:
         cash -= money(bill["amount"])
         min_cash = min(min_cash, cash)
         timeline.append({"date": bill["due_date"], "balance": amount(cash),
                          "event": bill["name"]})
+        if first_shortfall is None and cash < money(reserve):
+            first_shortfall = {
+                "date": bill["due_date"],
+                "bill": bill["payee"] or bill["name"],
+                "amount": amount(money(reserve) - cash),
+            }
     shortage = clamp_positive(money(reserve) - min_cash)
     remaining_savings = clamp_positive(savings)
     transfer = min(shortage, remaining_savings)
@@ -94,6 +101,9 @@ def forecast(checking, savings, bills, horizon_days=14, reserve=0, today=None):
         "is_shortfall": shortage > 0,
         "suggested_savings_transfer": amount(transfer),
         "remaining_shortfall_after_transfer": amount(shortage - transfer),
+        "first_shortfall_date": first_shortfall["date"] if first_shortfall else None,
+        "first_shortfall_bill": first_shortfall["bill"] if first_shortfall else None,
+        "first_shortfall_amount": first_shortfall["amount"] if first_shortfall else 0.0,
         "upcoming_bills": normalized,
         "timeline": timeline,
         "protected_reserve": amount(reserve),

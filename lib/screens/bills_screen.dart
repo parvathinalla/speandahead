@@ -27,6 +27,21 @@ class _BillsScreenState extends State<BillsScreen> {
   String dollars(dynamic value) =>
       '\$' + (double.tryParse(value.toString()) ?? 0).toStringAsFixed(2);
 
+  String shortDate(dynamic value) {
+    final date = DateTime.tryParse(value?.toString() ?? '');
+    if (date == null) return value?.toString() ?? 'an upcoming date';
+    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+      'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    return months[date.month - 1] + ' ' + date.day.toString();
+  }
+
+  String shortfallPreview(Map<String, dynamic> data) {
+    final bill = data['first_shortfall_bill']?.toString() ?? 'An upcoming bill';
+    return 'Heads up—' + bill + ' may leave you ' +
+        dollars(data['first_shortfall_amount']) + ' short on ' +
+        shortDate(data['first_shortfall_date']) + '......';
+  }
+
   Future<void> reload() async {
     if (mounted) setState(() { loading = true; error = null; });
     try {
@@ -266,6 +281,43 @@ class _BillsScreenState extends State<BillsScreen> {
     }
   }
 
+  Future<void> requestMoney() async {
+    final amount = double.tryParse(
+        forecast?['shortfall_amount'].toString() ?? '') ?? 0;
+    if (amount <= 0) return;
+    final contact = TextEditingController(text: 'Jamie');
+    try {
+      final requested = await showDialog<bool>(context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('Request money from a contact'),
+          content: Column(mainAxisSize: MainAxisSize.min, children: [
+            Text('Request ' + dollars(amount) +
+                ' to cover the projected shortfall.'),
+            const SizedBox(height: 12),
+            TextField(controller: contact, autofocus: true,
+              decoration: const InputDecoration(labelText: 'Contact name')),
+            const SizedBox(height: 8),
+            const Text('Demo request only. CreditPilot is not connected to '
+                'messaging or payment contacts.',
+              style: TextStyle(fontSize: 11, color: AppTheme.textSecondary)),
+          ]),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx, false),
+                child: const Text('Cancel')),
+            FilledButton(onPressed: () => Navigator.pop(ctx, true),
+                child: const Text('Prepare request')),
+          ],
+        ));
+      if (requested != true || !mounted) return;
+      final name = contact.text.trim().isEmpty ? 'contact' : contact.text.trim();
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(
+        content: Text('Demo request prepared for ' + name + ': ' +
+            dollars(amount) + '.')));
+    } finally {
+      contact.dispose();
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     if (loading) return const Center(child: CircularProgressIndicator());
@@ -312,19 +364,33 @@ class _BillsScreenState extends State<BillsScreen> {
         Row(children: [
           Expanded(child: metric('Checking', dollars(d['checking_balance']))),
           const SizedBox(width: 10),
-          Expanded(child: metric('Bills due (14 days)', dollars(d['total_bills_due']))),
+          Expanded(child: metric('Bills due (7 days)', dollars(d['total_bills_due']))),
         ]),
         const SizedBox(height: 12),
         Card(color: shortage ? AppTheme.riskRedBg : const Color(0xFFE7F8EC),
           child: Padding(padding: const EdgeInsets.all(16), child: Column(
             crossAxisAlignment: CrossAxisAlignment.start, children: [
-              Text(shortage ? 'Potential bill shortfall' : 'Upcoming bills covered',
+              Text(shortage ? '7-day cash warning' : 'Upcoming bills covered',
                 style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700)),
               Text(shortage ? dollars(d['shortfall_amount']) : 'On track',
                 style: TextStyle(fontSize: 25, fontWeight: FontWeight.w900,
                   color: shortage ? AppTheme.riskRed : AppTheme.brandNavy)),
-              const Text('Scenario estimate, not a guaranteed future balance.',
-                style: TextStyle(fontSize: 11)),
+              Text(shortage ? shortfallPreview(d)
+                  : 'Checking covers the bills currently due in the next 7 days.',
+                style: const TextStyle(fontSize: 11)),
+              if (shortage) ...[
+                const SizedBox(height: 12),
+                Wrap(spacing: 8, runSpacing: 8, children: [
+                  FilledButton.icon(
+                    onPressed: proposal > 0 ? reviewTransfer : null,
+                    icon: const Icon(Icons.savings_outlined, size: 18),
+                    label: Text('Move ' + dollars(proposal) + ' from savings')),
+                  OutlinedButton.icon(
+                    onPressed: requestMoney,
+                    icon: const Icon(Icons.person_add_alt_1_outlined, size: 18),
+                    label: const Text('Request from a contact')),
+                ]),
+              ],
             ]))),
         if (bankAccounts.isNotEmpty) ...[
           const SizedBox(height: 14),
@@ -384,7 +450,7 @@ class _BillsScreenState extends State<BillsScreen> {
             ),
         ])),
         const SizedBox(height: 14),
-        const Text('14-day balance forecast', style: TextStyle(
+        const Text('7-day balance forecast', style: TextStyle(
             fontSize: 15, fontWeight: FontWeight.w800)),
         Card(child: Column(children: [
           for (final day in (d['timeline'] as List? ?? []))
@@ -394,11 +460,6 @@ class _BillsScreenState extends State<BillsScreen> {
               trailing: Text(dollars(day['balance']),
                   style: const TextStyle(fontWeight: FontWeight.w700))),
         ])),
-        const SizedBox(height: 14),
-        ElevatedButton(
-          onPressed: proposal > 0 ? reviewTransfer : null,
-          child: Text('Review savings option: ' + dollars(proposal)),
-        ),
         if (synthetic) ...[
           const SizedBox(height: 18),
           const Text('Recent simulated activity', style: TextStyle(

@@ -467,7 +467,7 @@ def health():
 async def dashboard(request: Request, user=Depends(actor)):
     m = manifest(user)
     a = await accounts(gateway(request), m)
-    f = forecast_from(a, m)
+    f = forecast_from(a, m, days=7)
     return {"accounts": [
         {"kind": name, "id": item["_id"], "type": item.get("type"),
          "nickname": item.get("nickname"), "balance": account_amount(item),
@@ -671,7 +671,7 @@ def delete_demo_bill(bill_id: str, user=Depends(actor)):
 
 
 class BillForecastRequest(BaseModel):
-    horizon_days: int = Field(14, ge=1, le=90)
+    horizon_days: int = Field(7, ge=1, le=90)
     protected_reserve: float = Field(0, ge=0)
 
 

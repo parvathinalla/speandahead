@@ -174,7 +174,7 @@ class ApiService {
       _request('POST', '/api/bills/$billId/delete');
 
   static Future<Map<String, dynamic>> getBillForecast({
-    int days = 14,
+    int days = 7,
     double protectedReserve = 0,
   }) =>
       _request('POST', '/api/bills/forecast', {
