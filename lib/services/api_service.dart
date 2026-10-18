@@ -2,7 +2,6 @@ import 'dart:async';
 import 'dart:convert';
 import 'package:http/http.dart' as http;
 import 'package:flutter/foundation.dart';
-import '../auth/auth_config.dart';
 
 /// All banking credentials stay in FastAPI; Flutter never calls Nessie directly.
 /// Run Web/Windows: flutter run -d chrome --dart-define=API_BASE_URL=http://127.0.0.1:8000
@@ -16,20 +15,50 @@ class ApiException implements Exception {
 }
 
 class ApiService {
-  static final String baseUrl = const String.fromEnvironment(
-    'API_BASE_URL', defaultValue: 'http://127.0.0.1:8000');
+  static Future<Map<String, dynamic>> jointMembership() =>
+      _request('GET', '/api/joint/membership');
+
+  static Future<Map<String, dynamic>> setJointLimit(double amount) =>
+      _request('POST', '/api/joint/settings', {'amount': amount});
+
+  static Future<Map<String, dynamic>> jointPayments() =>
+      _request('GET', '/api/joint/payments');
+
+  static Future<Map<String, dynamic>> proposeJointPayment({
+    required double amount,
+    required String recipientId,
+    required String reason,
+  }) =>
+      _request('POST', '/api/joint/payments', {
+        'amount': amount,
+        'recipient_id': recipientId,
+        'reason': reason,
+        'confirmed': true,
+      });
+
+  static Future<Map<String, dynamic>> decideJointPayment(
+          String id, bool approve) =>
+      _request(
+          'POST', '/api/joint/payments/$id/decision', {'approve': approve});
+
+  static Future<Map<String, dynamic>> executeJointPayment(String id) =>
+      _request('POST', '/api/joint/payments/$id/execute', {'confirmed': true});
+
+  static Future<Map<String, dynamic>> reconcileJointPayment(String id) =>
+      _request('POST', '/api/joint/payments/$id/reconcile');
+  static final String baseUrl = const String.fromEnvironment('API_BASE_URL',
+      defaultValue: 'http://127.0.0.1:8000');
 
   // Auth0 SDK securely manages the session. Always retrieve a fresh access
   // token; do not persist or copy long-lived credentials into Flutter state.
   static Future<String?> Function()? tokenProvider;
 
-  static Future<Map<String, dynamic>> _request(
-      String method, String path, [Map<String, dynamic>? body,
-        Map<String, String>? extraHeaders]) async {
+  static Future<Map<String, dynamic>> _request(String method, String path,
+      [Map<String, dynamic>? body, Map<String, String>? extraHeaders]) async {
     try {
       if (kReleaseMode && Uri.parse(baseUrl).scheme != 'https') {
         throw ApiException(
-          'Release builds require HTTPS for protected API calls.');
+            'Release builds require HTTPS for protected API calls.');
       }
       final uri = Uri.parse('$baseUrl$path');
       final accessToken = await tokenProvider?.call();
@@ -40,8 +69,11 @@ class ApiService {
         if (extraHeaders != null) ...extraHeaders,
       };
       final response = method == 'GET'
-          ? await http.get(uri, headers: headers).timeout(const Duration(seconds: 30))
-          : await http.post(uri, headers: headers, body: jsonEncode(body ?? {}))
+          ? await http
+              .get(uri, headers: headers)
+              .timeout(const Duration(seconds: 30))
+          : await http
+              .post(uri, headers: headers, body: jsonEncode(body ?? {}))
               .timeout(const Duration(seconds: 30));
       Map<String, dynamic> payload;
       try {
@@ -52,9 +84,11 @@ class ApiService {
       }
       if (response.statusCode < 200 || response.statusCode >= 300) {
         throw ApiException(
-          'API ' + response.statusCode.toString() + ': ' +
-              (payload['detail']?.toString() ?? 'Request failed'),
-          statusCode: response.statusCode);
+            'API ' +
+                response.statusCode.toString() +
+                ': ' +
+                (payload['detail']?.toString() ?? 'Request failed'),
+            statusCode: response.statusCode);
       }
       return payload;
     } on ApiException {
@@ -72,11 +106,9 @@ class ApiService {
     }
   }
 
-  static Future<Map<String, dynamic>> health() =>
-      _request('GET', '/health');
+  static Future<Map<String, dynamic>> health() => _request('GET', '/health');
 
-  static Future<Map<String, dynamic>> me() =>
-      _request('GET', '/api/me');
+  static Future<Map<String, dynamic>> me() => _request('GET', '/api/me');
 
   static Future<Map<String, dynamic>> getDashboard() =>
       _request('GET', '/api/dashboard');
@@ -100,116 +132,132 @@ class ApiService {
       _request('GET', '/api/cards/catalog');
 
   static Future<Map<String, dynamic>> getTransactions({
-    int limit = 50, int offset = 0,
-  }) => _request('GET', '/api/transactions?limit=$limit&offset=$offset');
+    int limit = 50,
+    int offset = 0,
+  }) =>
+      _request('GET', '/api/transactions?limit=$limit&offset=$offset');
 
   static Future<Map<String, dynamic>> createBill({
-    required String payee, required double amount, required String dueDate,
-    String category = 'other', String frequency = 'monthly',
-  }) => _request('POST', '/api/bills/create', {
-        'payee': payee, 'payment_amount': amount,
-        'payment_date': dueDate, 'category': category,
+    required String payee,
+    required double amount,
+    required String dueDate,
+    String category = 'other',
+    String frequency = 'monthly',
+  }) =>
+      _request('POST', '/api/bills/create', {
+        'payee': payee,
+        'payment_amount': amount,
+        'payment_date': dueDate,
+        'category': category,
         'frequency': frequency,
       });
 
   static Future<Map<String, dynamic>> updateBill({
-    required String billId, required String payee,
-    required double amount, required String dueDate,
-    String category = 'other', String frequency = 'monthly',
-  }) => _request('POST', '/api/bills/$billId/update', {
-        'payee': payee, 'payment_amount': amount,
-        'payment_date': dueDate, 'category': category,
+    required String billId,
+    required String payee,
+    required double amount,
+    required String dueDate,
+    String category = 'other',
+    String frequency = 'monthly',
+  }) =>
+      _request('POST', '/api/bills/$billId/update', {
+        'payee': payee,
+        'payment_amount': amount,
+        'payment_date': dueDate,
+        'category': category,
         'frequency': frequency,
       });
 
   static Future<Map<String, dynamic>> deleteBill({
     required String billId,
-  }) => _request('POST', '/api/bills/$billId/delete');
+  }) =>
+      _request('POST', '/api/bills/$billId/delete');
 
   static Future<Map<String, dynamic>> getBillForecast({
-    int days = 14, double protectedReserve = 0,
-  }) => _request('POST', '/api/bills/forecast', {
-        'horizon_days': days, 'protected_reserve': protectedReserve,
+    int days = 14,
+    double protectedReserve = 0,
+  }) =>
+      _request('POST', '/api/bills/forecast', {
+        'horizon_days': days,
+        'protected_reserve': protectedReserve,
       });
 
   static Future<Map<String, dynamic>> evaluateCards({
-    double amount = 120, String category = 'groceries',
-    String merchant = 'Grocery store', double targetPct = 30,
-  }) => _request('POST', '/api/cards/evaluate', {
+    double amount = 120,
+    String category = 'groceries',
+    String merchant = 'Grocery store',
+    double targetPct = 30,
+  }) =>
+      _request('POST', '/api/cards/evaluate', {
         'purchase_amount': amount,
         'purchase_category': category,
         'merchant_name': merchant,
         'utilization_target_pct': targetPct,
       });
 
-  static Future<Map<String, dynamic>> evaluateJoint({
-    double amount = 850, String merchant = 'Electronics Store',
-    String category = 'Shopping',
-  }) => _request('POST', '/api/joint/evaluate', {
-        'amount': amount, 'merchant': merchant, 'category': category,
-      });
-
-  static Future<Map<String, dynamic>> requestJointApproval({
-    required double amount, required String merchant,
-  }) => _request('POST', '/api/joint/proposals', {
-        'amount': amount, 'merchant': merchant, 'confirmed': true,
-      });
-
-  static Future<Map<String, dynamic>> getJointInvitations() =>
-      _request('GET', '/api/joint/invitations');
-
-  static Future<Map<String, dynamic>> getMyJointProposals() =>
-      _request('GET', '/api/joint/proposals');
-
-  static Future<Map<String, dynamic>> decideJointProposal({
-    required String proposalId, required bool approve,
-  }) => _request(
-      'POST', '/api/joint/proposals/' + proposalId + '/decision',
-      {'approve': approve},
-      AuthConfig.debugDemo ? {'X-Demo-User': 'jamie'} : null);
-
   static Future<Map<String, dynamic>> evaluateEmergency({
-    double cost = 1000, double buffer = 300, int days = 14,
-  }) => _request('POST', '/api/emergency/evaluate', {
-        'emergency_cost': cost, 'safety_buffer': buffer, 'horizon_days': days,
+    double cost = 1000,
+    double buffer = 300,
+    int days = 14,
+  }) =>
+      _request('POST', '/api/emergency/evaluate', {
+        'emergency_cost': cost,
+        'safety_buffer': buffer,
+        'horizon_days': days,
       });
 
   static Future<Map<String, dynamic>> getAutoPayPreview({
-    double targetPct = 29, String account = 'card_a',
-    double safetyBuffer = 100, double assumedSavingsTransfer = 0,
-  }) => _request('POST', '/api/autopay/preview', {
+    double targetPct = 29,
+    String account = 'card_a',
+    double safetyBuffer = 100,
+    double assumedSavingsTransfer = 0,
+  }) =>
+      _request('POST', '/api/autopay/preview', {
         'target_utilization_pct': targetPct,
-        'account': account, 'safety_buffer': safetyBuffer,
+        'account': account,
+        'safety_buffer': safetyBuffer,
         'assumed_savings_transfer': assumedSavingsTransfer,
       });
 
   static Future<Map<String, dynamic>> scheduleAutoPay({
-    double targetPct = 29, String account = 'card_a',
-    double safetyBuffer = 100, double assumedSavingsTransfer = 0,
-  }) => _request('POST', '/api/autopay/plans', {
+    double targetPct = 29,
+    String account = 'card_a',
+    double safetyBuffer = 100,
+    double assumedSavingsTransfer = 0,
+  }) =>
+      _request('POST', '/api/autopay/plans', {
         'target_utilization_pct': targetPct,
-        'account': account, 'safety_buffer': safetyBuffer,
+        'account': account,
+        'safety_buffer': safetyBuffer,
         'assumed_savings_transfer': assumedSavingsTransfer,
         'confirmed': true,
       });
 
   static Future<Map<String, dynamic>> transferPreview({
-    required double amount, required String idempotencyKey,
-  }) => _request('POST', '/api/transfers/preview', {
-        'amount': amount, 'idempotency_key': idempotencyKey,
+    required double amount,
+    required String idempotencyKey,
+  }) =>
+      _request('POST', '/api/transfers/preview', {
+        'amount': amount,
+        'idempotency_key': idempotencyKey,
       });
 
   static Future<Map<String, dynamic>> executeTransfer({
-    required double amount, required String idempotencyKey,
-  }) => _request('POST', '/api/transfers/execute', {
-        'amount': amount, 'idempotency_key': idempotencyKey,
+    required double amount,
+    required String idempotencyKey,
+  }) =>
+      _request('POST', '/api/transfers/execute', {
+        'amount': amount,
+        'idempotency_key': idempotencyKey,
         'confirmed': true,
       });
 
   static Future<Map<String, dynamic>> simulatePurchase({
-    required double amount, required String category,
+    required double amount,
+    required String category,
     double? emergencyCost,
-  }) => _request('POST', '/api/decisions/purchase', {
+  }) =>
+      _request('POST', '/api/decisions/purchase', {
         'purchase_amount': amount,
         'purchase_category': category,
         if (emergencyCost != null) 'emergency_cost': emergencyCost,
@@ -242,8 +290,11 @@ class ApiService {
       _request('POST', '/api/agent/memories/clear');
 
   static Future<Map<String, dynamic>> explain({
-    required String topic, required Map<String, dynamic> result,
-  }) => _request('POST', '/api/ai/explain', {
-        'topic': topic, 'result': result,
+    required String topic,
+    required Map<String, dynamic> result,
+  }) =>
+      _request('POST', '/api/ai/explain', {
+        'topic': topic,
+        'result': result,
       });
 }

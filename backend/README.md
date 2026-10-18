@@ -44,8 +44,9 @@ For Android emulator, use `--dart-define=API_BASE_URL=http://10.0.2.2:8000`. For
 | Forecast | `POST /api/bills/forecast` | Deterministic timeline |
 | Rewards | `POST /api/cards/evaluate` | Real card balances + simulated rewards and limits |
 | Pre-purchase | `POST /api/decisions/purchase` | Rewards + bill cashflow + optional emergency |
-| Joint pre-check | `POST /api/joint/evaluate` | In-app proposal ONLY |
-| Joint approve | `POST /api/joint/proposals` and `POST /api/joint/proposals/{id}/decision` | Demo-only partner consent |
+| Joint membership / limit | `GET /api/joint/membership`, `POST /api/joint/settings` | Verified members; primary sets limit |
+| Joint payment / decision | `POST /api/joint/payments`, `POST /api/joint/payments/{id}/decision` | Gemini assessment; primary-only dependent approval |
+| Joint execution / reconciliation | `POST /api/joint/payments/{id}/execute`, `POST /api/joint/payments/{id}/reconcile` | Confirmed Nessie sandbox transfers; no automatic retry |
 | Emergencies | `POST /api/emergency/evaluate` | Available funds minus protected bills and reserve |
 | Utilization | `POST /api/autopay/preview` | Affordable paydown; no actual card payment |
 | What-if AutoPay | Same, with `assumed_savings_transfer` | Simulated funding without moving money |

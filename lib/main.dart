@@ -53,7 +53,7 @@ class _AuthGateState extends State<AuthGate> {
         if (!session.signedIn) {
           return const WelcomeScreen();
         }
-        if (!session.sandboxLinked) {
+        if (!session.sandboxLinked && !session.hasJointAccount) {
           return const AccountOnboardingScreen();
         }
         return const MainShell();

@@ -24,7 +24,7 @@ from pydantic import BaseModel, Field
 import jwt
 
 from finance_engine import (
-    amount, autopay_preview, card_comparison, emergency, forecast, joint_risk, money, next_payment_date
+    amount, autopay_preview, card_comparison, emergency, forecast, money, next_payment_date
 )
 import synthetic_bank as demo_bank
 from tigerdata_store import TigerDataStore
@@ -802,124 +802,11 @@ async def evaluate_emergency(body: EmergencyRequest, request: Request, user=Depe
     return result
 
 
-class JointRequest(BaseModel):
-    amount: float = Field(850, gt=0)
-    merchant: str = Field("Electronics store", max_length=90)
-    category: str = Field("Shopping", max_length=70)
-
-
-@app.post("/api/joint/evaluate")
-async def evaluate_joint(body: JointRequest, request: Request, user=Depends(actor)):
-    m = manifest(user)
-    a = await accounts(gateway(request), m)
-    result = joint_risk(body.amount, account_amount(a["joint_demo"]))
-    result.update({"merchant": body.merchant, "category": body.category,
-                   "account_name": a["joint_demo"].get("nickname"),
-                   "partner_name": "Jamie (simulated)",
-                   "transaction_status": "NOT SUBMITTED",
-                   "data_sources": {"balance": "nessie_sandbox",
-                                    "threshold_and_partner": "app_simulation"}})
-    return result
-
-
-class JointProposal(JointRequest):
-    confirmed: bool = False
-
-
-@app.post("/api/joint/proposals")
-async def propose_joint(body: JointProposal, request: Request, user=Depends(actor)):
-    if not body.confirmed:
-        raise HTTPException(400, "Initiator confirmation required")
-    evaluation = await evaluate_joint(body, request, user)
-    identity = str(uuid4())
-    tenant = manifest(user)
-    assigned_partner = ("demo-jamie" if AUTH_MODE == "demo"
-                        else tenant.get("joint_partner_sub", ""))
-    if not assigned_partner or assigned_partner == user:
-        raise HTTPException(409, "Invite a verified partner before requesting approval")
-    payload = {"initiator": user, "partner_sub": assigned_partner,
-               "evaluation": evaluation}
-    insert_action(identity, user, "joint_proposal", "awaiting_partner", payload)
-    return {"proposal_id": identity, "status": "awaiting_partner",
-            "note": "APP-SIMULATED approval, not a bank authorization hold"}
-
-
-class JointDecision(BaseModel):
-    approve: bool
-
-
-@app.post("/api/joint/proposals/{proposal_id}/decision")
-def joint_decision(proposal_id: str, body: JointDecision, user=Depends(actor)):
-    connection = db()
-    try:
-        connection.execute("BEGIN IMMEDIATE")
-        row = connection.execute("SELECT * FROM actions WHERE id=? AND action_type='joint_proposal'",
-                                 (proposal_id,)).fetchone()
-        if not row:
-            raise HTTPException(404, "Unknown proposal")
-        if row["owner"] == user:
-            raise HTTPException(403, "Initiator cannot approve their own joint proposal")
-        if user != json.loads(row["payload"]).get("partner_sub"):
-            raise HTTPException(403, "Only the invited partner can approve")
-        if row["status"] != "awaiting_partner":
-            raise HTTPException(409, "Proposal already decided")
-        # In demo mode the second demo identity models partner consent; real ownership
-        # must be checked against a verified joint-account relationship in production.
-        status = "approved_simulation" if body.approve else "declined"
-        connection.execute("UPDATE actions SET status=? WHERE id=?", (status, proposal_id))
-        connection.commit()
-        return {"proposal_id": proposal_id, "status": status,
-                "note": "No Nessie transaction was executed"}
-    finally:
-        connection.close()
-
-
-@app.get("/api/joint/invitations")
-def joint_invitations(user=Depends(actor)):
-    # A new Auth0 user may approve an invitation even before linking
-    # their own fictional bank sandbox.
-    connection = db()
-    try:
-        rows = connection.execute(
-            "SELECT id, owner, status, payload, created_at FROM actions "
-            "WHERE action_type='joint_proposal' AND status='awaiting_partner'"
-        ).fetchall()
-        results = []
-        for row in rows:
-            payload = json.loads(row["payload"])
-            if payload.get("partner_sub") != user:
-                continue
-            evaluation = payload.get("evaluation", {})
-            results.append({
-                "proposal_id": row["id"],
-                "merchant": evaluation.get("merchant", ""),
-                "amount": evaluation.get("amount", 0),
-                "status": row["status"],
-                "created_at": row["created_at"],
-                "scope": "app_simulation",
-            })
-        return {"invitations": results}
-    finally:
-        connection.close()
-
-
-@app.get("/api/joint/proposals")
-def my_joint_proposals(user=Depends(actor)):
-    connection = db()
-    try:
-        rows = connection.execute(
-            "SELECT id, status, payload, created_at FROM actions "
-            "WHERE action_type='joint_proposal' AND owner=? "
-            "ORDER BY created_at DESC LIMIT 100", (user,)
-        ).fetchall()
-        return {"proposals": [
-            {"proposal_id": r["id"], "status": r["status"],
-             "amount": json.loads(r["payload"]).get("evaluation", {}).get("amount"),
-             "created_at": r["created_at"]}
-            for r in rows
-        ]}
-    finally:
-        connection.close()
+# Legacy partner routes are intentionally removed: only verified membership and
+# primary/dependent roles authorize the joint payment workflow.
+from joint_accounts import create_router as joint_router
+app.include_router(joint_router(db, actor, gateway, lambda:
+    AUTH_MODE == "auth0" and DATA_MODE == "nessie" and PAYMENT_MODE == "nessie"))
 
 
 class TransferRequest(BaseModel):

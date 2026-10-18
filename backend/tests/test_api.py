@@ -51,6 +51,8 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setattr(main, "MANIFEST", manifest_path)
     monkeypatch.setattr(main, "SQLITE", tmp_path / "actions.sqlite3")
     monkeypatch.setattr(main, "AUTH_MODE", "demo")
+    monkeypatch.setattr(main, "DATA_MODE", "nessie")
+    monkeypatch.setattr(main, "DEMO_STORE", "sqlite")
     monkeypatch.setattr(main, "PAYMENT_MODE", "simulate")
     main.app.state.nessie = FakeNessie()
     with TestClient(main.app) as test_client:
@@ -108,18 +110,8 @@ def test_emergency_gap(client):
     assert response.json()["potential_gap"] == 250
 
 
-def test_joint_requires_distinct_partner_approval(client):
-    proposal = client.post("/api/joint/proposals",
-                           json={"amount": 850, "confirmed": True})
-    assert proposal.status_code == 200, proposal.text
-    proposal_id = proposal.json()["proposal_id"]
-    own = client.post("/api/joint/proposals/" + proposal_id + "/decision",
-                      json={"approve": True})
-    assert own.status_code == 403
-    partner = client.post("/api/joint/proposals/" + proposal_id + "/decision",
-                          headers={"X-Demo-User": "jamie"}, json={"approve": True})
-    assert partner.status_code == 200
-    assert partner.json()["status"] == "approved_simulation"
+def test_legacy_joint_partner_routes_are_unavailable(client):
+    assert client.post('/api/joint/proposals', json={'confirmed': True}).status_code == 404
 
 
 def test_transfer_requires_confirmation_and_is_idempotent(client):
@@ -307,20 +299,9 @@ def test_auth0_multiuser_isolation_with_real_rs256_tokens(client, monkeypatch, t
     assert client.get("/api/me",
                       headers={"Authorization": "Bearer " + forged}).status_code == 401
 
-    # A different user cannot approve the owner's proposal; only invited partner.
-    proposal = client.post(
-        "/api/joint/proposals",
-        json={"amount": 850, "merchant": "Fictional electronics", "confirmed": True},
-        headers=headers(owner),
-    )
-    assert proposal.status_code == 200, proposal.text
-    proposal_id = proposal.json()["proposal_id"]
-    decision = "/api/joint/proposals/" + proposal_id + "/decision"
-    assert client.post(decision, json={"approve": True}, headers=headers(guest)).status_code == 403
-    assert client.post(decision, json={"approve": True}, headers=headers(owner)).status_code == 403
-    approved = client.post(decision, json={"approve": True}, headers=headers(partner))
-    assert approved.status_code == 200, approved.text
-    assert approved.json()["status"] == "approved_simulation"
+    # An individual sandbox mapping never grants joint membership.
+    assert client.get('/api/joint/membership', headers=headers(owner)).json() == {'has_joint_account': False}
+    assert client.get('/api/joint/payments', headers=headers(guest)).status_code == 403
 
 
 def test_provisioning_does_not_share_nessie_accounts_between_auth0_users(tmp_path):
@@ -344,32 +325,6 @@ def test_provisioning_does_not_share_nessie_accounts_between_auth0_users(tmp_pat
         provision(source2, directory, "auth0|second")
     with pytest.raises(ValueError, match="already bound"):
         provision(source1, directory, "auth0|first")
-
-
-def test_only_invited_user_sees_joint_approval_inbox(client):
-    created = client.post("/api/joint/proposals",
-                          json={"amount": 850, "confirmed": True})
-    assert created.status_code == 200
-    assert client.get("/api/joint/invitations").json()["invitations"] == []
-    stranger = client.get("/api/joint/invitations",
-                          headers={"X-Demo-User": "mallory"})
-    assert stranger.status_code == 200
-    assert stranger.json()["invitations"] == []
-    partner = client.get("/api/joint/invitations",
-                         headers={"X-Demo-User": "jamie"})
-    assert partner.status_code == 200
-    invites = partner.json()["invitations"]
-    assert len(invites) == 1
-    assert invites[0]["proposal_id"] == created.json()["proposal_id"]
-    owned = client.get("/api/joint/proposals")
-    assert owned.status_code == 200
-    assert len(owned.json()["proposals"]) == 1
-    status = client.post(
-        "/api/joint/proposals/" + invites[0]["proposal_id"] + "/decision",
-        headers={"X-Demo-User": "jamie"}, json={"approve": True})
-    assert status.status_code == 200
-    assert client.get("/api/joint/invitations",
-                      headers={"X-Demo-User": "jamie"}).json()["invitations"] == []
 
 
 def test_auth_token_errors_explain_only_safe_reason_in_dev(monkeypatch):

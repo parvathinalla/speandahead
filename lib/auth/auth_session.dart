@@ -18,6 +18,7 @@ class AuthSession extends ChangeNotifier {
   bool _initializing = true;
   bool _busy = false;
   bool _sandboxLinked = false;
+  bool _hasJointAccount = false;
   String? _error;
   String? _configError;
 
@@ -26,6 +27,7 @@ class AuthSession extends ChangeNotifier {
   bool get initializing => _initializing;
   bool get busy => _busy;
   bool get sandboxLinked => _sandboxLinked;
+  bool get hasJointAccount => _hasJointAccount;
   String? get error => _error;
   String? get configurationError => _configError;
 
@@ -36,7 +38,8 @@ class AuthSession extends ChangeNotifier {
     try {
       if (AuthConfig.debugDemo) {
         _profile = const AuthProfile(
-          subject: 'demo-sarah', displayName: 'Demo Member',
+          subject: 'demo-sarah',
+          displayName: 'Demo Member',
           email: 'demo@example.invalid',
         );
         ApiService.tokenProvider = null;
@@ -67,12 +70,15 @@ class AuthSession extends ChangeNotifier {
       final me = await ApiService.me();
       if (!AuthConfig.debugDemo && me['security_mode'] != 'auth0') {
         throw ApiException(
-          'FastAPI must use AUTH_MODE=auth0 before using real user logins.');
+            'FastAPI must use AUTH_MODE=auth0 before using real user logins.');
       }
       _sandboxLinked = me['sandbox_linked'] == true;
+      final joint = await ApiService.jointMembership();
+      _hasJointAccount = joint['has_joint_account'] == true;
       _error = null;
     } catch (error) {
       _sandboxLinked = false;
+      _hasJointAccount = false;
       _error = error.toString();
     }
     notifyListeners();
@@ -82,7 +88,8 @@ class AuthSession extends ChangeNotifier {
     if (_busy || _configError != null) return;
     if (AuthConfig.debugDemo) {
       _profile ??= const AuthProfile(
-        subject: 'demo-sarah', displayName: 'Demo Member',
+        subject: 'demo-sarah',
+        displayName: 'Demo Member',
         email: 'demo@example.invalid',
       );
       ApiService.tokenProvider = null;
@@ -115,6 +122,7 @@ class AuthSession extends ChangeNotifier {
     // Erase user-specific visible state and bearer-token source immediately.
     _profile = null;
     _sandboxLinked = false;
+    _hasJointAccount = false;
     _error = null;
     ApiService.tokenProvider = null;
     notifyListeners();
