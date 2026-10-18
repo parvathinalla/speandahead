@@ -11,8 +11,10 @@ class AutoPayScreen extends StatefulWidget {
 
 class _AutoPayScreenState extends State<AutoPayScreen> {
   double targetUtil = 29;
-  double assumedSavings = 0;
-  String account = 'card_a';
+  final savingsInput = TextEditingController(text: '0');
+  double get assumedSavings => double.tryParse(savingsInput.text) ?? 0;
+  List<Map<String, dynamic>> cardCatalog = [];
+  String? account;
   Map<String, dynamic>? result;
   String? error;
   bool loading = true;
@@ -20,18 +22,41 @@ class _AutoPayScreenState extends State<AutoPayScreen> {
   @override
   void initState() {
     super.initState();
-    refresh();
+    loadCards();
+  }
+
+  @override
+  void dispose() {
+    savingsInput.dispose();
+    super.dispose();
+  }
+
+  Future<void> loadCards() async {
+    setState(() { loading = true; error = null; });
+    try {
+      final catalog = await ApiService.getCardCatalog();
+      final cards = (catalog['cards'] as List? ?? [])
+          .map((item) => Map<String, dynamic>.from(item as Map))
+          .toList();
+      if (cards.isEmpty) throw ApiException('No credit cards available in your demo profile');
+      cardCatalog = cards;
+      account = cards.first['account'].toString();
+      await refresh();
+    } catch (e) {
+      if (mounted) setState(() { error = e.toString(); loading = false; });
+    }
   }
 
   String dollars(dynamic v) =>
       '\$' + (double.tryParse(v.toString()) ?? 0).toStringAsFixed(2);
 
   Future<void> refresh() async {
+    if (account == null) return;
     if (mounted) setState(() { loading = true; error = null; });
     try {
       final response = await ApiService.getAutoPayPreview(
         targetPct: targetUtil,
-        account: account,
+        account: account!,
         assumedSavingsTransfer: assumedSavings,
       );
       if (mounted) setState(() { result = response; loading = false; });
@@ -62,7 +87,7 @@ class _AutoPayScreenState extends State<AutoPayScreen> {
     try {
       final response = await ApiService.scheduleAutoPay(
         targetPct: targetUtil,
-        account: account,
+        account: account!,
         assumedSavingsTransfer: assumedSavings,
       );
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(
@@ -101,12 +126,14 @@ class _AutoPayScreenState extends State<AutoPayScreen> {
         Card(child: Padding(padding: const EdgeInsets.all(14),
           child: Column(children: [
             DropdownButtonFormField<String>(
-              value: account,
-              decoration: const InputDecoration(labelText: 'Demo credit card'),
-              items: const [
-                DropdownMenuItem(value: 'card_a', child: Text('Card A')),
-                DropdownMenuItem(value: 'card_b', child: Text('Card B')),
-              ],
+              value: cardCatalog.any((c) => c['account'] == account) ? account : null,
+              decoration: const InputDecoration(labelText: 'Choose your demo credit card'),
+              items: cardCatalog.map((c) => DropdownMenuItem<String>(
+                value: c['account'].toString(),
+                child: Text(c['display_name'].toString() +
+                    ' ••••' + c['last4'].toString(),
+                    overflow: TextOverflow.ellipsis),
+              )).toList(),
               onChanged: (v) { if (v != null) { account = v; refresh(); } },
             ),
             const SizedBox(height: 8),
@@ -122,15 +149,21 @@ class _AutoPayScreenState extends State<AutoPayScreen> {
               onChanged: (v) { if (v != null) { targetUtil = v; refresh(); } },
             ),
             const SizedBox(height: 8),
-            SwitchListTile(
-              contentPadding: EdgeInsets.zero,
-              title: const Text('What if I move \$800 from savings?'),
-              subtitle: const Text('Preview only; no bank transfer occurs.'),
-              value: assumedSavings > 0,
-              onChanged: (value) {
-                assumedSavings = value ? 800 : 0;
-                refresh();
-              },
+            TextField(
+              controller: savingsInput,
+              keyboardType: const TextInputType.numberWithOptions(decimal: true),
+              decoration: const InputDecoration(
+                labelText: 'What-if transfer from savings (USD)',
+                helperText: 'Any amount; scenario only, no real funds moved',
+                prefixIcon: Icon(Icons.savings_outlined),
+              ),
+              onSubmitted: (_) => refresh(),
+            ),
+            const SizedBox(height: 8),
+            OutlinedButton.icon(
+              onPressed: refresh,
+              icon: const Icon(Icons.calculate_outlined),
+              label: const Text('Recalculate plan'),
             ),
           ]))),
         if (loading) const Padding(padding: EdgeInsets.all(20),
@@ -142,6 +175,10 @@ class _AutoPayScreenState extends State<AutoPayScreen> {
               TextButton(onPressed: refresh, child: const Text('Retry')),
             ]))),
         if (!loading && d != null) ...[
+          Text(d['card_display_name']?.toString() ?? 'Credit card',
+              style: const TextStyle(fontSize: 16,
+                  fontWeight: FontWeight.w800, color: AppTheme.brandNavy)),
+          const SizedBox(height: 10),
           Row(children: [
             Expanded(child: metric('Credit limit', dollars(d['card_limit']))),
             const SizedBox(width: 8),
