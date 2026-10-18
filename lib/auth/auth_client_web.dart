@@ -45,7 +45,7 @@ class WebAuthClient implements AuthClient {
       audience: AuthConfig.audience,
       redirectUrl: AuthConfig.webRedirect,
       scopes: _scopes,
-      parameters: const {},
+      parameters: const {'prompt': 'login'},
     );
     // A successful login triggers a browser navigation; bootstrap resumes on return.
     return null;

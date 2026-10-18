@@ -67,7 +67,8 @@ void main() {
               role == 'dependent' ? findsOneWidget : findsNothing);
         }
         await tester.pumpWidget(const SizedBox.shrink());
-        await tester.pump();
+        // Finish any location lookup started by a visited tab.
+        await tester.pump(const Duration(seconds: 21));
       }, () => client);
       client.close();
     });

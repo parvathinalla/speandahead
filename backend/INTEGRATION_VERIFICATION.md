@@ -123,3 +123,9 @@ The final backend regression suite passed 187 tests; Flutter passed 13 tests. Th
 Merged origin/main at 398e6fe into the TigerData/Nessie feature branch. Main already contains Bindhu's Flutter/joint work, Rohith's finance/location/push work, and Ajit's cards/AutoPay update (eaaf4a1). Resolved three overlapping edits while retaining both the trip planner and concise advisor, live Nessie activity, the updated cashflow screen, and request-specific connection errors. Login retries cannot overlap, and connection errors no longer claim that an existing account is unlinked.
 
 Combined regression checks: 206 backend tests and 14 Flutter tests passed. No real banking transfer or notification delivery was triggered by these tests. Browser login remains a separate user-session check. Private environment settings and identity provisioning plans remain ignored by Git.
+
+## Post-integration fixes
+
+Emergency evaluation, hurricane simulation, and purchase stress tests now support checking-only users; savings transfer previews return 409 when no savings account exists. The API regression suite passed 25 tests, including the new checking-only route coverage, and live read-only emergency calculations passed for all three provisioned users. Auth0 interactive login now sends prompt=login for fresh credential entry.
+
+Both location features share a bounded 20-second lookup with retryable failures instead of caching a failed Future for the session. Nearby merchant lookup still requires a private GOOGLE_PLACES_API_KEY, which was absent during verification. Hurricane location simulation does not need that key. Browser/device location permission and live geolocation remain external prerequisites; successful live location lookup is not claimed.

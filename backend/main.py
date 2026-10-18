@@ -575,7 +575,7 @@ async def hurricane_assessment(owner: str, region: str, safety_buffer: float,
     simulated_cost = sum(HURRICANE_EXPENSES.values())
     result = emergency(
         account_amount(account_values["checking"]),
-        account_amount(account_values["savings"]),
+        account_amount(account_values["savings"]) if "savings" in account_values else 0,
         upcoming["total_bills_due"], simulated_cost, safety_buffer,
     )
     gap = float(result["potential_gap"])
@@ -1437,7 +1437,7 @@ async def evaluate_emergency(body: EmergencyRequest, request: Request, user=Depe
     m = manifest(user)
     a = await accounts(gateway(request), m)
     f = forecast_from(a, m, body.horizon_days)
-    result = emergency(account_amount(a["checking"]), account_amount(a["savings"]),
+    result = emergency(account_amount(a["checking"]), account_amount(a["savings"]) if "savings" in a else 0,
                        f["total_bills_due"], body.emergency_cost, body.safety_buffer)
     result["data_sources"] = f["data_sources"]
     return result
@@ -1521,6 +1521,8 @@ class TransferRequest(BaseModel):
 async def preview_transfer(body: TransferRequest, request: Request, user=Depends(actor)):
     m = manifest(user)
     a = await accounts(gateway(request), m)
+    if "savings" not in a:
+        raise HTTPException(409, "No savings account is linked for this transfer")
     balance = account_amount(a["savings"])
     max_safe = max(0, amount(balance - body.savings_reserve))
     return {"amount": body.amount, "source": "savings", "destination": "checking",
@@ -1628,7 +1630,7 @@ async def integrated_decision(body: PurchaseDecision, request: Request, user=Dep
               "note": "Credit-card purchases add future repayment obligations; an immediate checking debit does not occur."}
     if body.emergency_cost is not None:
         result["emergency_stress_test"] = emergency(
-            account_amount(a["checking"]), account_amount(a["savings"]),
+            account_amount(a["checking"]), account_amount(a["savings"]) if "savings" in a else 0,
             f["total_bills_due"], body.emergency_cost, 300)
     return result
 

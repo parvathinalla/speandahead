@@ -532,3 +532,28 @@ def test_auth_token_errors_explain_only_safe_reason_in_dev(monkeypatch):
     assert prod.status_code == 401
     assert prod.detail == "Invalid or expired authentication token"
     assert "audience" not in prod.detail
+
+
+def test_checking_only_emergency_and_purchase_preview(client, monkeypatch):
+    original = main.manifest
+    def checking_only(user='demo-sarah'):
+        data = original(user)
+        data['ids']['accounts'].pop('savings', None)
+        return data
+    monkeypatch.setattr(main, 'manifest', checking_only)
+    result = client.post('/api/emergency/evaluate', json={'emergency_cost': 1000, 'safety_buffer': 300})
+    assert result.status_code == 200, result.text
+    assert result.json()['total_available_funds'] == 500
+    assert result.json()['potential_gap'] == 1000
+    decision = client.post('/api/decisions/purchase', json={
+        'purchase_amount': 20, 'purchase_category': 'dining',
+        'merchant_name': 'Demo Cafe', 'emergency_cost': 1000})
+    assert decision.status_code == 200, decision.text
+    assert decision.json()['emergency_stress_test']['total_available_funds'] == 500
+    transfer = client.post('/api/transfers/preview', json={
+        'amount': 10, 'idempotency_key': 'no-savings-preview'})
+    assert transfer.status_code == 409
+    import asyncio
+    assessment = asyncio.run(main.hurricane_assessment(
+        'demo-sarah', 'Florida', 300, main.app.state.nessie))
+    assert assessment['total_available_funds'] == 500

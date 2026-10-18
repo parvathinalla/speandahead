@@ -1,3 +1,5 @@
+import 'dart:async';
+import 'package:flutter/foundation.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -26,12 +28,25 @@ class LocationService {
   AppLocationResult? _lastResult;
 
   Future<AppLocationResult> initialize({bool requestAgain = false}) {
-    if (!requestAgain && _inFlight != null) return _inFlight!;
-    _inFlight = _resolve(requestAgain: requestAgain);
-    return _inFlight!;
+    if (_inFlight != null) return _inFlight!;
+    if (!requestAgain && _lastResult?.status == AppLocationStatus.ready) {
+      return Future.value(_lastResult!);
+    }
+    final request = _resolve(requestAgain: requestAgain).timeout(
+      const Duration(seconds: 20),
+      onTimeout: () => _remember(const AppLocationResult(
+        AppLocationStatus.unavailable,
+        'Location lookup timed out. Check browser location permissions, '
+        'then retry or enter the merchant manually.',
+      )),
+    );
+    _inFlight = request;
+    return request.whenComplete(() {
+      if (identical(_inFlight, request)) _inFlight = null;
+    });
   }
 
-  Future<AppLocationResult> refresh() => _resolve(requestAgain: true);
+  Future<AppLocationResult> refresh() => initialize(requestAgain: true);
 
   Future<AppLocationResult> _resolve({required bool requestAgain}) async {
     try {
@@ -58,7 +73,9 @@ class LocationService {
         return _remember(
           const AppLocationResult(
             AppLocationStatus.deniedForever,
-            'Location permission is blocked. Enable it in system settings or enter the merchant manually.',
+            kIsWeb
+                ? 'Location permission is blocked. Allow location for this site in your browser, then retry.'
+                : 'Location permission is blocked. Enable it in system settings or enter the merchant manually.',
           ),
         );
       }
