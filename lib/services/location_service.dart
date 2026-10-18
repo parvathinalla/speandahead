@@ -60,7 +60,7 @@ class LocationService {
       }
 
       var permission = await Geolocator.checkPermission();
-      if (permission == LocationPermission.denied) {
+      if (!kIsWeb && permission == LocationPermission.denied) {
         final preferences = await SharedPreferences.getInstance();
         final attempted = preferences.getBool(_promptAttemptedKey) ?? false;
         if (!attempted || requestAgain) {
@@ -79,7 +79,7 @@ class LocationService {
           ),
         );
       }
-      if (permission == LocationPermission.denied) {
+      if (!kIsWeb && permission == LocationPermission.denied) {
         return _remember(
           const AppLocationResult(
             AppLocationStatus.denied,
@@ -90,7 +90,9 @@ class LocationService {
 
       final position = await Geolocator.getCurrentPosition(
         locationSettings: const LocationSettings(
-          accuracy: LocationAccuracy.high,
+          // Web requestPermission performs an extra unbounded position lookup.
+          // getCurrentPosition prompts once and applies the browser timeout.
+          accuracy: kIsWeb ? LocationAccuracy.medium : LocationAccuracy.high,
           timeLimit: Duration(seconds: 12),
         ),
       );
@@ -101,6 +103,16 @@ class LocationService {
           position,
         ),
       );
+    } on PermissionDeniedException {
+      return _remember(const AppLocationResult(
+        AppLocationStatus.denied,
+        'Location access was denied. Allow location for this site in your browser, then retry.',
+      ));
+    } on TimeoutException {
+      return _remember(const AppLocationResult(
+        AppLocationStatus.unavailable,
+        'The device did not return a location in time. Check location services or try another browser.',
+      ));
     } catch (_) {
       return _remember(
         const AppLocationResult(
@@ -118,5 +130,6 @@ class LocationService {
 
   AppLocationResult? get lastResult => _lastResult;
 
-  Future<bool> openSettings() => Geolocator.openAppSettings();
+  Future<bool> openSettings() async =>
+      kIsWeb ? false : await Geolocator.openAppSettings();
 }
