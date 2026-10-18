@@ -1,4 +1,4 @@
-# CreditPilot AI / SpendAhead
+# CreditPilot AI  
 
 **Before you spend, see what happens next.** A Flutter + FastAPI hackathon prototype built using Capital One's Nessie mock-banking API and deterministic financial scenario analysis.
 
