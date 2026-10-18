@@ -379,3 +379,91 @@ def revise_income(conn: sqlite3.Connection, subject: str, income: float) -> dict
         profile["monthly_income"] = _dollars(income)
         return {"monthly_income": profile["monthly_income"], "source": DATA_SOURCE}
     return _mutate(conn, subject, apply)
+
+
+def simulated_transfer(conn: sqlite3.Connection, subject: str,
+                       dollars: float, request_key: str, savings_reserve: float) -> dict:
+    """Atomically move fictional balances and write an idempotent action record.
+
+    This changes only the synthetic local portfolio. It NEVER makes a Nessie
+    or real banking request.
+    """
+    value = Decimal(str(dollars)).quantize(Decimal("0.01"))
+    reserve = Decimal(str(savings_reserve)).quantize(Decimal("0.01"))
+    if value <= 0 or reserve < 0 or len(request_key) < 8:
+        raise ValueError("Invalid simulation amount, reserve or idempotency key")
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        previous = conn.execute(
+            "SELECT owner, action_type, status, payload FROM actions WHERE id=?",
+            (request_key,)
+        ).fetchone()
+        if previous:
+            owner, kind, status, raw = previous
+            if owner != subject or kind != "transfer":
+                raise ValueError("This idempotency key is already in use")
+            earlier = json.loads(raw)
+            if Decimal(str(earlier["amount"])) != value:
+                raise ValueError("The idempotency key cannot be reused with another amount")
+            portfolio = conn.execute(
+                "SELECT payload FROM synthetic_profiles WHERE owner_sub=?", (subject,)
+            ).fetchone()
+            profile = json.loads(portfolio[0]) if portfolio else None
+            conn.commit()
+            return {
+                "idempotency_key": request_key, "status": status,
+                "previous_request": True, "simulation": True,
+                "balances": {
+                    "checking": profile["accounts"]["checking"]["balance"],
+                    "savings": profile["accounts"]["savings"]["balance"],
+                } if profile else {},
+            }
+
+        entry = conn.execute(
+            "SELECT slot, payload FROM synthetic_profiles WHERE owner_sub=?",
+            (subject,)
+        ).fetchone()
+        if not entry:
+            raise ValueError("No personal demo profile was found")
+        slot, data = entry
+        profile = json.loads(data)
+        savings = Decimal(str(profile["accounts"]["savings"]["balance"]))
+        checking = Decimal(str(profile["accounts"]["checking"]["balance"]))
+        if savings - value < reserve:
+            raise ValueError("Transfer would violate the protected savings reserve")
+        profile["accounts"]["checking"]["balance"] = _dollars(checking + value)
+        profile["accounts"]["savings"]["balance"] = _dollars(savings - value)
+        now = date.today().isoformat()
+        for key, direction in (("savings", "debit"), ("checking", "credit")):
+            profile["transactions"].insert(0, {
+                "id": "transfer-" + request_key + "-" + key,
+                "account_id": profile["ids"]["accounts"][key],
+                "account_kind": key, "merchant": "Own account transfer",
+                "category": "transfer", "direction": direction,
+                "amount": _dollars(value), "date": now,
+                "status": "posted", "source": DATA_SOURCE,
+            })
+        conn.execute(
+            "UPDATE synthetic_profiles SET payload=? WHERE slot=? AND owner_sub=?",
+            (json.dumps(profile, separators=(",", ":")), slot, subject)
+        )
+        conn.execute(
+            """INSERT INTO actions(id, owner, action_type, status, payload)
+               VALUES (?,?,?,?,?)""",
+            (request_key, subject, "transfer", "simulated_posted",
+             json.dumps({"amount": _dollars(value), "source": DATA_SOURCE}))
+        )
+        conn.commit()
+        return {
+            "idempotency_key": request_key,
+            "status": "simulated_posted",
+            "previous_request": False,
+            "simulation": True,
+            "balances": {
+                "checking": profile["accounts"]["checking"]["balance"],
+                "savings": profile["accounts"]["savings"]["balance"],
+            },
+        }
+    except Exception:
+        conn.rollback()
+        raise
