@@ -727,8 +727,21 @@ class ExplainRequest(BaseModel):
 async def explain(body: ExplainRequest, user=Depends(actor)):
     # Explanations are generated solely from an already-calculated numeric result.
     # No PII, Nessie ID or other user's record is sent to Gemini.
-    slim = {k: v for k, v in body.result.items()
-            if k not in ("accounts", "customer", "account_id", "id", "token", "api_key")}
+    # Never forward user-provided names, account IDs or arbitrary nested
+    # objects to an external model. Only approved numeric outcomes are sent.
+    allowed = {
+        "checking_balance", "savings_balance", "total_bills_due",
+        "shortfall_amount", "suggested_savings_transfer",
+        "projected_end_balance", "current_utilization_pct",
+        "target_utilization_pct", "recommended_payment_amount",
+        "max_safe_payment_today", "potential_gap", "usable_cash_buffer",
+        "estimated_emergency_cost", "rewards_amount", "utilization_after_pct",
+    }
+    slim = {
+        k: round(float(v), 2) for k, v in body.result.items()
+        if k in allowed and isinstance(v, (int, float))
+        and not isinstance(v, bool) and abs(float(v)) <= 100000000
+    }
     fixed = "This is a simulated planning estimate, not a guaranteed financial outcome."
     key = os.getenv("GEMINI_API_KEY")
     if not key:
