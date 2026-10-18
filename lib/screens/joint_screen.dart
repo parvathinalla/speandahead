@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 import '../theme/app_theme.dart';
+import '../auth/auth_config.dart';
+import '../widgets/partner_invitations.dart';
 import '../services/api_service.dart';
 
 class JointScreen extends StatefulWidget {
@@ -139,7 +141,7 @@ class _JointScreenState extends State<JointScreen> {
                 const SizedBox(height: 6),
                 const Text('Simulated second participant: Jamie',
                     style: TextStyle(fontSize: 11)),
-                if (proposalStatus == 'awaiting_partner')
+                if (proposalStatus == 'awaiting_partner' && AuthConfig.debugDemo)
                   Row(children: [
                     Expanded(child: OutlinedButton(
                       onPressed: () => respond(false),
@@ -149,8 +151,15 @@ class _JointScreenState extends State<JointScreen> {
                       onPressed: () => respond(true),
                       child: const Text('Demo: Approve'))),
                   ]),
+                if (proposalStatus == 'awaiting_partner' && !AuthConfig.debugDemo)
+                  const Text(
+                    'Waiting for the invited Auth0 partner to sign in and decide. '
+                    'The initiator cannot approve their own proposal.',
+                    style: TextStyle(fontSize: 11)),
               ]))),
           ],
+          const SizedBox(height: 12),
+          const PartnerInvitations(),
           const SizedBox(height: 12),
           const Text(
             'This is a simulation of in-app consent. It cannot stop, intercept, '
