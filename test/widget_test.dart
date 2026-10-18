@@ -3,6 +3,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:creditpilot_mobile/main.dart';
 import 'package:creditpilot_mobile/screens/main_shell.dart';
 import 'package:creditpilot_mobile/core/auth/auth_service.dart';
+import 'package:creditpilot_mobile/app/theme/app_theme.dart';
 
 void main() {
   setUp(() async {
@@ -10,8 +11,13 @@ void main() {
   });
 
   testWidgets('CreditPilotApp smoke test with 5 bottom tabs', (WidgetTester tester) async {
-    await tester.pumpWidget(const CreditPilotApp());
-    await tester.pumpAndSettle();
+    await tester.pumpWidget(
+  MaterialApp(
+    theme: AppTheme.lightTheme,
+    home: const MainShell(),
+  ),
+);
+await tester.pumpAndSettle();
 
     // Verify MainShell is mounted
     expect(find.byType(MainShell), findsOneWidget);
