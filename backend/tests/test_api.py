@@ -370,3 +370,17 @@ def test_only_invited_user_sees_joint_approval_inbox(client):
     assert status.status_code == 200
     assert client.get("/api/joint/invitations",
                       headers={"X-Demo-User": "jamie"}).json()["invitations"] == []
+
+
+def test_auth_token_errors_explain_only_safe_reason_in_dev(monkeypatch):
+    from fastapi import HTTPException
+    monkeypatch.setattr(main, "ENVIRONMENT", "development")
+    issue = main.auth_error("audience_mismatch")
+    assert isinstance(issue, HTTPException)
+    assert issue.status_code == 401
+    assert issue.detail == "Invalid authentication token (audience_mismatch)"
+    monkeypatch.setattr(main, "ENVIRONMENT", "production")
+    prod = main.auth_error("audience_mismatch")
+    assert prod.status_code == 401
+    assert prod.detail == "Invalid or expired authentication token"
+    assert "audience" not in prod.detail
