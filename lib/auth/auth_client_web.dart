@@ -36,13 +36,13 @@ class WebAuthClient implements AuthClient {
   }
 
   @override
-  Future<AuthProfile?> login({required bool signUp}) async {
+  Future<AuthProfile?> login() async {
     // Redirect to hosted Universal Login using PKCE and validated OAuth state.
     await _sdk.loginWithRedirect(
       audience: AuthConfig.audience,
       redirectUrl: AuthConfig.webRedirect,
       scopes: _scopes,
-      parameters: signUp ? {'screen_hint': 'signup'} : const {},
+      parameters: const {},
     );
     // A successful login triggers a browser navigation; bootstrap resumes on return.
     return null;
