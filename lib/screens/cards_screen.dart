@@ -57,7 +57,7 @@ class _CardsScreenState extends State<CardsScreen> {
       showDialog<void>(context: context, builder: (ctx) => AlertDialog(
         title: const Text('Financial Decision Preview'),
         content: Text(
-          'Recommended: ' + card['card_name'].toString() +
+          'Recommended: ' + card['display_name']?.toString() ?? card['card_name'].toString() +
           '\nUpcoming bills: ' + dollars(cash['total_bills_due']) +
           '\nChecking shortage: ' + dollars(cash['shortfall_amount']) +
           '\nEmergency funding gap: ' + dollars(emergency['potential_gap']) +
@@ -120,11 +120,11 @@ class _CardsScreenState extends State<CardsScreen> {
                 const Text('Recommended option', style: TextStyle(
                     fontSize: 12, fontWeight: FontWeight.w600)),
                 Text(best.isEmpty ? 'No card has enough available credit'
-                                  : best['card_name'].toString().toUpperCase(),
+                                  : best['display_name']?.toString() ?? best['card_name'].toString(),
                     style: const TextStyle(color: AppTheme.brandNavy,
                         fontWeight: FontWeight.w900, fontSize: 21)),
                 if (best.isNotEmpty) Text(
-                  'Rewards: ' + dollars(best['rewards_amount']) +
+                  'Fictional offer • Rewards: ' + dollars(best['rewards_amount']) +
                   ' • After-purchase utilization: ' +
                   best['utilization_after_pct'].toString() + '%'),
                 const SizedBox(height: 6),
@@ -135,8 +135,9 @@ class _CardsScreenState extends State<CardsScreen> {
           for (final item in cardList)
             Card(child: ListTile(
               leading: const Icon(Icons.credit_card, color: AppTheme.brandBlue),
-              title: Text(item['card_name'].toString().toUpperCase()),
-              subtitle: Text('Current utilization: ' +
+              title: Text(item['display_name']?.toString() ?? item['card_name'].toString()),
+              subtitle: Text('•••• ' + (item['last4']?.toString() ?? '0000') + ' • ' +
+                  (item['issuer']?.toString() ?? 'Fictional issuer') + '\nCurrent utilization: ' +
                   item['current_utilization_pct'].toString() +
                   '% → ' + item['utilization_after_pct'].toString() + '%'),
               trailing: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
