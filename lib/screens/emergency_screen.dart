@@ -1,183 +1,134 @@
 import 'package:flutter/material.dart';
 import '../theme/app_theme.dart';
+import '../services/api_service.dart';
 
-class EmergencyScreen extends StatelessWidget {
+class EmergencyScreen extends StatefulWidget {
   const EmergencyScreen({super.key});
+  @override
+  State<EmergencyScreen> createState() => _EmergencyScreenState();
+}
+
+class _EmergencyScreenState extends State<EmergencyScreen> {
+  final costController = TextEditingController(text: '1000');
+  double buffer = 300;
+  Map<String, dynamic>? result;
+  String? error;
+  bool loading = false;
+
+  @override
+  void initState() {
+    super.initState();
+    evaluate();
+  }
+
+  @override
+  void dispose() {
+    costController.dispose();
+    super.dispose();
+  }
+
+  double get cost => double.tryParse(costController.text) ?? 0;
+  String dollars(dynamic v) =>
+      '\$' + (double.tryParse(v.toString()) ?? 0).toStringAsFixed(2);
+
+  Future<void> evaluate() async {
+    if (cost < 0) {
+      setState(() => error = 'Enter a nonnegative emergency amount');
+      return;
+    }
+    if (mounted) setState(() { loading = true; error = null; });
+    try {
+      final response = await ApiService.evaluateEmergency(
+          cost: cost, buffer: buffer);
+      if (mounted) setState(() { result = response; loading = false; });
+    } catch (e) {
+      if (mounted) setState(() { error = e.toString(); loading = false; });
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      body: SafeArea(
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.all(16),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              // Header
-              Row(
-                children: [
-                  Container(
-                    width: 40,
-                    height: 40,
-                    decoration: BoxDecoration(
-                      color: AppTheme.brandBlueLight,
-                      borderRadius: BorderRadius.circular(10),
-                    ),
-                    child: const Icon(Icons.shield_outlined, color: AppTheme.brandBlue),
-                  ),
-                  const SizedBox(width: 12),
-                  const Expanded(
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          "Emergency Readiness",
-                          style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800, color: AppTheme.brandNavy),
-                        ),
-                        Text(
-                          "See if your current funds can cover an unexpected emergency.",
-                          style: TextStyle(fontSize: 11, color: AppTheme.textSecondary),
-                        ),
-                      ],
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 16),
-
-              // Hero Card
-              Card(
-                child: Padding(
-                  padding: const EdgeInsets.all(14),
-                  child: Row(
-                    children: [
-                      Container(
-                        width: 44,
-                        height: 44,
-                        decoration: BoxDecoration(
-                          shape: BoxShape.circle,
-                          color: AppTheme.brandBlueLight,
-                        ),
-                        child: const Icon(Icons.beach_access, color: AppTheme.brandBlue, size: 22),
-                      ),
-                      const SizedBox(width: 12),
-                      const Expanded(
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Text(
-                              "Can your funds cover an emergency?",
-                              style: TextStyle(fontSize: 13, fontWeight: FontWeight.w800, color: AppTheme.brandNavy),
-                            ),
-                            SizedBox(height: 2),
-                            Text(
-                              "Based on your current accounts and a typical emergency scenario.",
-                              style: TextStyle(fontSize: 11, color: AppTheme.textSecondary),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-              const SizedBox(height: 14),
-
-              // Funds & Bills Breakdown
-              Card(
-                child: Padding(
-                  padding: const EdgeInsets.all(14),
-                  child: Column(
-                    children: [
-                      _buildBreakdownRow(Icons.account_balance_wallet, "Available funds", "(Checking + Savings)", "\$2,000"),
-                      const Divider(height: 20),
-                      _buildBreakdownRow(Icons.description, "Protected bills", "(Already committed)", "\$1,200"),
-                      const Divider(height: 20),
-                      _buildBreakdownRow(Icons.umbrella, "Estimated emergency cost", "(e.g., housing, food, transport)", "\$1,000"),
-                    ],
-                  ),
-                ),
-              ),
-              const SizedBox(height: 14),
-
-              // Potential Gap Alert
-              Container(
-                padding: const EdgeInsets.all(14),
-                decoration: BoxDecoration(
-                  color: AppTheme.riskRedBg,
-                  borderRadius: BorderRadius.circular(14),
-                  border: const Border(left: BorderSide(color: AppTheme.riskRed, width: 4)),
-                ),
-                child: const Row(
-                  children: [
-                    Icon(Icons.warning_amber_rounded, color: AppTheme.riskRed, size: 28),
-                    SizedBox(width: 12),
-                    Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text("Potential gap", style: TextStyle(fontSize: 12, fontWeight: FontWeight.w700, color: AppTheme.riskRedText)),
-                        Text("\$200", style: TextStyle(fontSize: 24, fontWeight: FontWeight.w900, color: AppTheme.riskRed)),
-                        Text("Your current funds may not fully cover an emergency.", style: TextStyle(fontSize: 10.5, color: AppTheme.riskRedText)),
-                      ],
-                    ),
-                  ],
-                ),
-              ),
-              const SizedBox(height: 14),
-
-              const Text("Here are some options:", style: TextStyle(fontSize: 12, fontWeight: FontWeight.w800, color: AppTheme.textSecondary)),
-              const SizedBox(height: 8),
-
-              _buildOptionTile(Icons.savings_outlined, "Move money from savings"),
-              const SizedBox(height: 6),
-              _buildOptionTile(Icons.credit_card_off_outlined, "Pause non-essential spending"),
-              const SizedBox(height: 6),
-              _buildOptionTile(Icons.verified_user_outlined, "Explore a small emergency buffer"),
-              const SizedBox(height: 16),
-
-              SizedBox(
-                width: double.infinity,
-                child: ElevatedButton(
-                  onPressed: () {},
-                  child: const Text("Explore options"),
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-
-  Widget _buildBreakdownRow(IconData icon, String title, String sub, String val) {
-    return Row(
-      children: [
-        Icon(icon, size: 18, color: AppTheme.brandNavy),
-        const SizedBox(width: 10),
-        Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(title, style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: AppTheme.brandNavy)),
-              Text(sub, style: const TextStyle(fontSize: 10, color: AppTheme.textMuted)),
-            ],
-          ),
-        ),
-        Text(val, style: const TextStyle(fontSize: 15, fontWeight: FontWeight.w800, color: AppTheme.brandNavy)),
+    final gap = double.tryParse(result?['potential_gap'].toString() ?? '') ?? 0;
+    return Scaffold(body: SafeArea(child: ListView(
+      padding: const EdgeInsets.all(16), children: [
+        const Text('Emergency Readiness', style: TextStyle(
+            fontSize: 22, fontWeight: FontWeight.w800,
+            color: AppTheme.brandNavy)),
+        const SizedBox(height: 4),
+        const Text('Can your cash cover an unexpected expense while preserving bills?',
+            style: TextStyle(color: AppTheme.textSecondary, fontSize: 11)),
+        const SizedBox(height: 14),
+        Card(child: Padding(padding: const EdgeInsets.all(14),
+          child: Column(children: [
+            TextField(controller: costController,
+              keyboardType: const TextInputType.numberWithOptions(decimal: true),
+              decoration: const InputDecoration(
+                labelText: 'Emergency cost estimate',
+                prefixIcon: Icon(Icons.emergency_outlined))),
+            const SizedBox(height: 10),
+            DropdownButtonFormField<double>(
+              value: buffer,
+              decoration: const InputDecoration(labelText: 'Protected safety reserve'),
+              items: const [
+                DropdownMenuItem(value: 0, child: Text('\$0')),
+                DropdownMenuItem(value: 100, child: Text('\$100')),
+                DropdownMenuItem(value: 300, child: Text('\$300')),
+                DropdownMenuItem(value: 500, child: Text('\$500')),
+              ],
+              onChanged: (v) { if (v != null) setState(() => buffer = v); }),
+            const SizedBox(height: 12),
+            SizedBox(width: double.infinity,
+              child: ElevatedButton(onPressed: loading ? null : evaluate,
+                child: const Text('Estimate Emergency Readiness'))),
+          ]))),
+        const SizedBox(height: 12),
+        if (loading) const Center(child: CircularProgressIndicator()),
+        if (error != null) Card(child: Padding(padding: const EdgeInsets.all(14),
+          child: Column(children: [
+            Text(error!, style: const TextStyle(color: AppTheme.riskRed)),
+            TextButton(onPressed: evaluate, child: const Text('Retry')),
+          ]))),
+        if (!loading && result != null) ...[
+          Card(color: gap > 0 ? AppTheme.riskRedBg : const Color(0xFFE7F8EC),
+            child: Padding(padding: const EdgeInsets.all(16),
+              child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+                Text(gap > 0 ? 'Additional funding may be needed'
+                             : 'Current cash covers this estimate',
+                    style: const TextStyle(
+                      fontSize: 14, fontWeight: FontWeight.w700)),
+                const SizedBox(height: 6),
+                Text(gap > 0 ? 'Gap: ' + dollars(gap) : 'Covered',
+                    style: TextStyle(fontSize: 26, fontWeight: FontWeight.w900,
+                      color: gap > 0 ? AppTheme.riskRed : AppTheme.brandNavy)),
+                Text('Coverage: ' + result!['coverage_pct'].toString() + '%'),
+              ]))),
+          const SizedBox(height: 12),
+          Card(child: Column(children: [
+            item('Checking + Savings', result!['total_available_funds']),
+            item('Protected upcoming bills', result!['protected_committed_bills']),
+            item('Safety reserve', result!['safety_buffer']),
+            item('Usable cash', result!['usable_cash_buffer']),
+            item('Estimated emergency cost', result!['estimated_emergency_cost']),
+            item('Potential gap', result!['potential_gap']),
+          ])),
+          const SizedBox(height: 10),
+          const Card(child: Padding(padding: EdgeInsets.all(12),
+            child: Text(
+              'This is an affordability stress test, not a weather forecast '
+              'or an emergency prediction. It uses Nessie sandbox balances '
+              'and locally simulated future bills.',
+              style: TextStyle(fontSize: 11, color: AppTheme.textSecondary)),
+          )),
+        ],
       ],
-    );
+    )));
   }
 
-  Widget _buildOptionTile(IconData icon, String title) {
-    return Card(
-      child: ListTile(
-        leading: Icon(icon, color: AppTheme.brandNavy),
-        title: Text(title, style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700, color: AppTheme.brandNavy)),
-        trailing: const Icon(Icons.chevron_right, color: AppTheme.textMuted),
-        contentPadding: const EdgeInsets.symmetric(horizontal: 14, vertical: 0),
-        dense: true,
-        onTap: () {},
-      ),
-    );
-  }
+  Widget item(String label, dynamic value) => ListTile(
+    dense: true,
+    title: Text(label),
+    trailing: Text(dollars(value),
+      style: const TextStyle(fontWeight: FontWeight.w800,
+          color: AppTheme.brandNavy)),
+  );
 }

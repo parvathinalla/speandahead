@@ -54,3 +54,26 @@ app.*.map.json
 
 # Widget Preview related
 .widget_preview/
+
+# Private environment files and credentials (all directories)
+.env
+.env.*
+!.env.example
+**/.env
+**/.env.*
+!**/.env.example
+*.pem
+*.p12
+*.pfx
+
+# Generated Nessie sandbox IDs and local seeding state
+backend/seed_manifest.json
+backend/seed_manifest.json.tmp
+
+# Backend local databases, caches, venv
+*.sqlite3
+*.sqlite3-*
+.pytest_cache/
+__pycache__/
+.venv/
+.env.local
