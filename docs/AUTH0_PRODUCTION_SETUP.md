@@ -1,4 +1,4 @@
-# CreditPilot Auth0 — secure signup/login deployment
+# CreditPilot Auth0 — existing users, login-only deployment
 
 The app uses the official auth0_flutter SDK, Auth0 Universal Login and OAuth Authorization Code + PKCE. Passwords and client secrets are NEVER collected by Flutter. FastAPI validates signed access tokens (RS256 JWKS, issuer, audience, expiry and subject).
 
@@ -11,7 +11,7 @@ Open https://manage.auth0.com
 1. Applications > APIs > Create API. Name it CreditPilot API; identifier example: https://api.creditpilot.example ; choose RS256. Copy the exact identifier as AUTH0_AUDIENCE.
 2. Applications > Applications > Create Application > Single Page Web Application. Name CreditPilot Web. Copy the tenant Domain and Web Client ID. Client secret must NEVER be embedded into Flutter.
 3. Create a second application of type Native. Name CreditPilot Mobile; copy Native Client ID.
-4. Enable at least one database/social identity connection for both apps, and turn on signup. Enable email verification, attack protections and MFA policies appropriate for financial information.
+4. Use an Auth0 database connection configured for existing, administrator-provisioned users; enable **Disable Sign Ups** under Authentication > Database > your connection > Settings. Restrict enabled connections on each CreditPilot application so another connection cannot allow open signups. Do not use social login if you need to prohibit unprovisioned users. Enable email verification, attack protections and MFA policies appropriate for financial information.
 5. In the Auth0 Applications settings, select RS256 and OIDC-conformant mode.
 
 Web SPA callback, logout and allowed web origins (development):
@@ -41,14 +41,14 @@ Restart FastAPI after updating the file:
 
     python -m uvicorn main:app --app-dir backend --host 127.0.0.1 --port 8765
 
-## 3. Flutter Web login and signup
+## 3. Flutter Web login (no public signup)
 
 Use the project root in PowerShell. Replace example values:
 
     flutter pub get
     flutter run -d chrome --web-port=8080 --dart-define=API_BASE_URL=http://127.0.0.1:8765 --dart-define=AUTH0_DOMAIN=YOUR_AUTH0_DOMAIN --dart-define=AUTH0_WEB_CLIENT_ID=YOUR_WEB_CLIENT_ID --dart-define=AUTH0_AUDIENCE=https://api.creditpilot.example
 
-The welcome screen presents Log In and Create Account. Both use hosted Auth0, never app password forms. After sign-in, the app checks GET /api/me with an Auth0 JWT. Unmapped users see an onboarding screen rather than anyone else's balances.
+The welcome screen presents only **Log In**, using hosted Auth0 (not an app password form). After sign-in, the app checks GET /api/me with an Auth0 JWT. Unmapped users see a safe account-linking screen rather than anyone else's balances. Removing the Flutter signup button does not block Auth0 registrations by itself: enable Disable Sign Ups on the Auth0 database connection and verify it in the hosted Universal Login page.
 
 A temporary local ONLY debug mode is available when the backend uses AUTH_MODE=demo:
 
@@ -58,7 +58,7 @@ This debug switch does NOT test Auth0 and is ineffective in release builds.
 
 ## 4. Explicitly link one fictional Nessie sandbox per authenticated user
 
-After registering, note Account ID from the app onboarding page. On the trusted backend machine:
+After an administrator creates the Auth0 user, log in once and note the Account ID from the app's account-linking screen. On the trusted backend machine:
 
     python backend/scripts/link_user_sandbox.py --subject "auth0|YOUR_USER_SUB"
 
@@ -97,7 +97,9 @@ Before deploying at scale, replace demo SQLite with a production transactional D
 
 ## 7. Verify
 
-- Sign Up and Login via Universal Login; Auth0 callback works.
+- The CreditPilot app shows Log In only; public Sign Up and Create Account are absent.
+- Auth0 database connection has Disable Sign Ups enabled for every database connection exposed to the app; test that public registration is rejected.
+- Administrator-provisioned Auth0 user logs in via Universal Login; the callback works.
 - Refresh browser to restore authenticated session.
 - Logout clears app financial screens and removes the bearer token source.
 - Correctly signed JWT with expected audience gets authenticated.
@@ -110,3 +112,7 @@ Before deploying at scale, replace demo SQLite with a production transactional D
 
 Official SDK: https://pub.dev/packages/auth0_flutter
 Official Auth0 web quickstart: https://auth0.com/docs/quickstart/spa/flutter
+
+## Important distinction: Nessie accounts vs Auth0 logins
+
+Nessie customer/account records have no bank login credentials. The 500-account Nessie seeder creates banking sandbox records, **not** 500 Auth0 identities. For this login-only prototype, an administrator must provision authorized Auth0 identities and establish one-to-one backend ownership mappings before a user sees their Nessie accounts. Do not ask customers to enter bank credentials into CreditPilot. A real bank app or financial-data connection would require bank-approved identity and consent integrations.
