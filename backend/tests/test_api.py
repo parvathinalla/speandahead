@@ -344,3 +344,29 @@ def test_provisioning_does_not_share_nessie_accounts_between_auth0_users(tmp_pat
         provision(source2, directory, "auth0|second")
     with pytest.raises(ValueError, match="already bound"):
         provision(source1, directory, "auth0|first")
+
+
+def test_only_invited_user_sees_joint_approval_inbox(client):
+    created = client.post("/api/joint/proposals",
+                          json={"amount": 850, "confirmed": True})
+    assert created.status_code == 200
+    assert client.get("/api/joint/invitations").json()["invitations"] == []
+    stranger = client.get("/api/joint/invitations",
+                          headers={"X-Demo-User": "mallory"})
+    assert stranger.status_code == 200
+    assert stranger.json()["invitations"] == []
+    partner = client.get("/api/joint/invitations",
+                         headers={"X-Demo-User": "jamie"})
+    assert partner.status_code == 200
+    invites = partner.json()["invitations"]
+    assert len(invites) == 1
+    assert invites[0]["proposal_id"] == created.json()["proposal_id"]
+    owned = client.get("/api/joint/proposals")
+    assert owned.status_code == 200
+    assert len(owned.json()["proposals"]) == 1
+    status = client.post(
+        "/api/joint/proposals/" + invites[0]["proposal_id"] + "/decision",
+        headers={"X-Demo-User": "jamie"}, json={"approve": True})
+    assert status.status_code == 200
+    assert client.get("/api/joint/invitations",
+                      headers={"X-Demo-User": "jamie"}).json()["invitations"] == []
