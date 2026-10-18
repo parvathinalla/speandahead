@@ -420,6 +420,131 @@ def get_bills(user=Depends(actor)):
     return {"bills": bills(m), "source": m.get("source", "local_app_simulation")}
 
 
+def require_synthetic():
+    if DATA_MODE != "synthetic":
+        raise HTTPException(409, "This feature requires automatic synthetic banking profiles")
+
+
+@app.get("/api/demo/catalog")
+def synthetic_catalog(user=Depends(actor)):
+    require_synthetic()
+    connection = db()
+    try:
+        return demo_bank.stats(connection)
+    finally:
+        connection.close()
+
+
+@app.get("/api/profile")
+def my_banking_profile(user=Depends(actor)):
+    m = manifest(user)
+    return {
+        "profile_id": m.get("portfolio_id"),
+        "persona": m.get("persona", "legacy_demo"),
+        "monthly_income": m.get("monthly_income"),
+        "account_count": len(m["ids"]["accounts"]),
+        "bill_count": len(m["app_bills"]),
+        "source": m.get("source", "nessie_sandbox"),
+        "simulation_only": True,
+    }
+
+
+class IncomeUpdate(BaseModel):
+    monthly_income: float = Field(..., ge=0, le=1000000)
+
+
+@app.post("/api/profile/income")
+def update_demo_income(body: IncomeUpdate, user=Depends(actor)):
+    require_synthetic()
+    manifest(user)
+    connection = db()
+    try:
+        return demo_bank.revise_income(connection, user, body.monthly_income)
+    finally:
+        connection.close()
+
+
+@app.get("/api/cards/catalog")
+async def get_card_catalog(request: Request, user=Depends(actor)):
+    m = manifest(user)
+    data = await accounts(gateway(request), m)
+    cards = []
+    for key, rule in card_rules(m, data).items():
+        cards.append({
+            "account": key, "display_name": rule["display_name"],
+            "issuer": rule["issuer"], "network": rule["network"],
+            "last4": rule["last4"], "balance": rule["balance"],
+            "credit_limit": rule["credit_limit"],
+            "rewards": rule["reward_rates"],
+            "source": m.get("source", "local_app_simulation"),
+        })
+    return {"cards": cards,
+            "disclaimer": "Card issuers, product names and reward rates are fictional scenarios."}
+
+
+@app.get("/api/transactions")
+def get_demo_transactions(limit: int = 50, offset: int = 0, user=Depends(actor)):
+    require_synthetic()
+    if not 1 <= limit <= 100 or offset < 0:
+        raise HTTPException(422, "Limit must be 1–100, offset must be nonnegative")
+    m = manifest(user)
+    records = m.get("transactions", [])
+    return {"transactions": records[offset:offset+limit], "total": len(records),
+            "limit": limit, "offset": offset, "source": demo_bank.DATA_SOURCE}
+
+
+class DemoBillInput(BaseModel):
+    payee: str = Field(..., min_length=2, max_length=100)
+    payment_amount: float = Field(..., gt=0, le=100000)
+    payment_date: date
+    category: str = Field("other", min_length=2, max_length=40)
+    frequency: str = Field("monthly", pattern="^(monthly|one_time)$")
+
+
+@app.post("/api/bills/create")
+def create_demo_bill(body: DemoBillInput, user=Depends(actor)):
+    require_synthetic()
+    manifest(user)
+    connection = db()
+    try:
+        payload = body.model_dump()
+        payload["payment_date"] = body.payment_date.isoformat()
+        return {"bill": demo_bank.upsert_bill(connection, user, payload)}
+    finally:
+        connection.close()
+
+
+@app.post("/api/bills/{bill_id}/update")
+def update_demo_bill(bill_id: str, body: DemoBillInput, user=Depends(actor)):
+    require_synthetic()
+    manifest(user)
+    connection = db()
+    try:
+        payload = body.model_dump()
+        payload["payment_date"] = body.payment_date.isoformat()
+        try:
+            return {"bill": demo_bank.upsert_bill(connection, user, payload, bill_id)}
+        except ValueError:
+            raise HTTPException(404, "Bill was not found in your demo portfolio") from None
+    finally:
+        connection.close()
+
+
+@app.post("/api/bills/{bill_id}/delete")
+def delete_demo_bill(bill_id: str, user=Depends(actor)):
+    require_synthetic()
+    manifest(user)
+    connection = db()
+    try:
+        try:
+            demo_bank.delete_bill(connection, user, bill_id)
+        except ValueError:
+            raise HTTPException(404, "Bill was not found in your demo portfolio") from None
+        return {"bill_id": bill_id, "status": "deleted_from_demo"}
+    finally:
+        connection.close()
+
+
 class BillForecastRequest(BaseModel):
     horizon_days: int = Field(14, ge=1, le=90)
     protected_reserve: float = Field(0, ge=0)
