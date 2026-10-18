@@ -1,0 +1,59 @@
+name: creditpilot
+
+services:
+  api:
+    build:
+      context: ..
+      dockerfile: backend/Dockerfile
+    restart: unless-stopped
+    read_only: true
+    tmpfs: [/tmp]
+    environment:
+      APP_ENV: production
+      AUTH_MODE: auth0
+      PAYMENT_MODE: simulate
+      AUTH0_DOMAIN: ${AUTH0_DOMAIN:?Auth0 domain required}
+      AUTH0_AUDIENCE: ${AUTH0_AUDIENCE:?Auth0 API audience required}
+      NESSIE_API_KEY: ${NESSIE_API_KEY:?Sandbox API key required}
+      NESSIE_BASE_URL: https://prod-api.nessieisreal.com
+      CORS_ORIGINS: https://${APP_DOMAIN:?Frontend domain required}
+      TENANT_MANIFEST_DIR: /app/private/tenants
+      DB_PATH: /app/private/creditpilot.sqlite3
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GEMINI_MODEL: ${GEMINI_MODEL:-gemini-2.5-flash}
+    volumes:
+      - private_data:/app/private
+    expose: ["8000"]
+
+  web:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile.web
+      args:
+        AUTH0_DOMAIN: ${AUTH0_DOMAIN:?Auth0 domain required}
+        AUTH0_WEB_CLIENT_ID: ${AUTH0_WEB_CLIENT_ID:?Web client ID required}
+        AUTH0_AUDIENCE: ${AUTH0_AUDIENCE:?Audience required}
+        API_BASE_URL: https://${API_DOMAIN:?API domain required}
+    restart: unless-stopped
+    expose: ["80"]
+
+  proxy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    depends_on: [api, web]
+    environment:
+      APP_DOMAIN: ${APP_DOMAIN:?Frontend domain required}
+      API_DOMAIN: ${API_DOMAIN:?API domain required}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+volumes:
+  private_data:
+  caddy_data:
+  caddy_config:
