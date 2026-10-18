@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import '../auth/auth_session.dart';
 import '../theme/app_theme.dart';
+import '../widgets/partner_invitations.dart';
 
 class AccountOnboardingScreen extends StatelessWidget {
   const AccountOnboardingScreen({super.key});
@@ -21,7 +22,7 @@ class AccountOnboardingScreen extends StatelessWidget {
         padding: const EdgeInsets.all(20),
         child: ConstrainedBox(
           constraints: const BoxConstraints(maxWidth: 470),
-          child: Card(child: Padding(
+          child: Column(children: [Card(child: Padding(
             padding: const EdgeInsets.all(24),
             child: Column(children: [
               const CircleAvatar(
@@ -68,6 +69,9 @@ class AccountOnboardingScreen extends StatelessWidget {
                   fontSize: 11, color: AppTheme.textSecondary)),
             ]),
           )),
+          const SizedBox(height: 14),
+          const PartnerInvitations(),
+          ]),
         ),
       )),
     );
