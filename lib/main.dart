@@ -1,6 +1,8 @@
+
 import 'package:flutter/material.dart';
 
 import 'auth/auth_session.dart';
+import 'auth/auth_config.dart';
 import 'screens/account_onboarding_screen.dart';
 import 'screens/main_shell.dart';
 import 'screens/welcome_screen.dart';
@@ -20,6 +22,13 @@ class CreditPilotApp extends StatelessWidget {
       title: 'CreditPilot AI',
       debugShowCheckedModeBanner: false,
       theme: AppTheme.lightTheme,
+      builder: (context, child) => AuthConfig.debugDemo
+          ? Banner(
+              message: 'LOCAL DEMO',
+              location: BannerLocation.topEnd,
+              child: child ?? const SizedBox.shrink(),
+            )
+          : child ?? const SizedBox.shrink(),
       home: const AuthGate(),
     );
   }
@@ -45,17 +54,22 @@ class _AuthGateState extends State<AuthGate> {
       animation: AuthSession.instance,
       builder: (context, _) {
         final session = AuthSession.instance;
+
         if (session.initializing) {
           return const Scaffold(
-            body: Center(child: CircularProgressIndicator()),
+            body: Center(
+              child: CircularProgressIndicator(),
+            ),
           );
         }
+
         if (!session.signedIn) {
           return const WelcomeScreen();
         }
         if (!session.sandboxLinked && !session.hasJointAccount) {
           return const AccountOnboardingScreen();
         }
+
         return const MainShell();
       },
     );

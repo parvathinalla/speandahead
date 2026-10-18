@@ -23,6 +23,8 @@ def call(base, path, body=None):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--url", default="http://127.0.0.1:8000")
+    parser.add_argument("--synthetic", action="store_true",
+                        help="Verify labeled fictional data from run_local_demo.py")
     args = parser.parse_args()
     base = args.url.rstrip("/")
     passed = 0
@@ -36,13 +38,19 @@ def main():
 
     health = call(base, "/health")
     check("Backend health", health.get("status") == "ok")
-    check("Local sandbox seed exists", health.get("seed_manifest_present") is True)
+    if args.synthetic:
+        check("Synthetic demo mode", health.get("data_mode") == "synthetic")
+        check("No provider writes", health.get("payment_mode") == "simulate")
+    else:
+        check("Local sandbox seed exists", health.get("seed_manifest_present") is True)
 
     dashboard = call(base, "/api/dashboard")
     accounts = dashboard.get("accounts", [])
-    check("6 Nessie sandbox accounts", len(accounts) >= 6)
-    check("Balances originate in Nessie", all(x.get("source") == "nessie_sandbox" for x in accounts))
-    check("Bills explicitly simulated", dashboard["data_sources"]["bills"] == "local_app_simulation")
+    expected_source = "synthetic_banking_demo" if args.synthetic else "nessie_sandbox"
+    check("Expected demo accounts", len(accounts) >= (4 if args.synthetic else 6))
+    check("Balances have expected provenance", all(x.get("source") == expected_source for x in accounts))
+    check("Bills explicitly simulated", dashboard["data_sources"]["bills"] ==
+          ("synthetic_banking_demo" if args.synthetic else "local_app_simulation"))
 
     bill = call(base, "/api/bills/forecast", {"horizon_days": 14})
     check("Forecast matches total itemized bills",
@@ -74,7 +82,8 @@ def main():
           joint["transaction_status"] == "NOT SUBMITTED")
 
     print("\nSUCCESS: " + str(passed) + " smoke checks passed.")
-    print("Nessie balances were read by FastAPI; no banking actions were executed.")
+    print(("Synthetic demo balances" if args.synthetic else "Nessie balances") +
+          " were read by FastAPI; no banking actions were executed.")
 
 
 if __name__ == "__main__":
