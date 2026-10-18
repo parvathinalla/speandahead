@@ -18,6 +18,8 @@ from pathlib import Path
 import sys
 import time
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
 from seed_nessie import BACKEND, Nessie, env, listing
 from synthetic_bank import CATALOG_SIZE, _make_profile
 
