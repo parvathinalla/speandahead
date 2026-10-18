@@ -106,3 +106,35 @@ python backend\scripts\seed_nessie.py --verify
 Do **not** run the old `--repair-bills` command: it is intentionally disabled
 to avoid deleting a known bill when Nessie's read/write models disagree.
 Keep your original `seed_manifest.json`; never share `backend/.env` or the API key.
+
+## Seed 500 actual Nessie accounts
+
+The existing `seed_nessie.py` creates only 2 customers and 6 accounts. The new
+`seed_nessie_bulk.py` creates **500 fictional Nessie customers and 500 checking accounts**
+(one per customer); it is separate from the 500 synthetic SQLite/TigerData profiles.
+
+Run these commands from the repository root after configuring your private Nessie API key in `backend/.env`:
+
+```powershell
+git pull origin main
+python backend\scripts\seed_nessie_bulk.py
+python backend\scripts\seed_nessie_bulk.py --apply
+python backend\scripts\seed_nessie_bulk.py --verify
+```
+
+The default invocation previews only; `--apply` creates records; `--verify`
+reads back each created customer and account from the Nessie API.
+To test 5 first, use `--count 5 --apply`, then `--count 5 --verify`,
+then `--count 500 --apply` and finally `--verify`.
+
+The restart-safe checkpoint is `backend/nessie_bulk_manifest.json` (Git-ignored).
+Use the same API key and preserve this manifest to resume.
+Optional `--full-portfolio --apply` seeds 4-8 accounts per customer, more than
+500 accounts total. Choose that mode before the first run, and keep that
+flag for subsequent apply/verify calls.
+
+Bulk seeding creates Nessie accounts only: it does NOT upload synthetic
+transactions or future bills, and does not automatically link the new customers
+to Auth0 or make them visible in the existing app demo. The current Nessie
+app still uses its existing per-user `seed_manifest.json` mappings.
+No real transactions, payments, or transfers are created.

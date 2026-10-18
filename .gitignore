@@ -62,6 +62,8 @@ app.*.map.json
 # Generated Nessie sandbox IDs and local seeding state
 backend/seed_manifest.json
 backend/seed_manifest.json.tmp
+backend/nessie_bulk_manifest.json
+backend/nessie_bulk_manifest.json.tmp
 
 # Backend local databases, caches, venv
 *.sqlite3

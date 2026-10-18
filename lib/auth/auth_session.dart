@@ -78,7 +78,7 @@ class AuthSession extends ChangeNotifier {
     notifyListeners();
   }
 
-  Future<void> signIn({bool signUp = false}) async {
+  Future<void> signIn() async {
     if (_busy || _configError != null) return;
     if (AuthConfig.debugDemo) {
       _profile ??= const AuthProfile(
@@ -95,7 +95,7 @@ class AuthSession extends ChangeNotifier {
     try {
       _client ??= createAuthClient();
       ApiService.tokenProvider = _client!.accessToken;
-      final identity = await _client!.login(signUp: signUp);
+      final identity = await _client!.login();
       if (identity != null) {
         _profile = identity;
         await refreshLink();

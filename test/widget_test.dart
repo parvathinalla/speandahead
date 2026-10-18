@@ -12,8 +12,9 @@ void main() {
     expect(find.byType(WelcomeScreen), findsOneWidget);
     expect(find.text('CreditPilot AI'), findsOneWidget);
     expect(find.text('Auth0 configuration required'), findsOneWidget);
-    expect(find.text('Create Account'), findsOneWidget);
+    expect(find.text('Create Account'), findsNothing);
     expect(find.text('Log In'), findsOneWidget);
+    expect(find.text('Already have an account? Log in to continue.'), findsOneWidget);
     expect(find.byType(BottomNavigationBar), findsNothing);
   });
 }
