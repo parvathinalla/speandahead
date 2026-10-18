@@ -34,6 +34,9 @@ class JointPostgresConnection:
             if self.in_transaction:
                 raise RuntimeError("Nested joint transaction")
             self.raw.execute("BEGIN")
+            # Serialize joint state transitions and admin provisioning across
+            # API instances. Small hackathon workload; prioritize correctness.
+            self.raw.execute("SELECT pg_advisory_xact_lock(50315892)")
             self.in_transaction = True
             return None
         # Only trusted SQL shipped with joint_accounts.py or the operator script
