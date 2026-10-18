@@ -99,8 +99,11 @@ def test_push_device_registration_and_daily_delivery(client):
 
     first = asyncio.run(main.run_daily_push_cycle(main.app.state.nessie, fake_sender))
     second = asyncio.run(main.run_daily_push_cycle(main.app.state.nessie, fake_sender))
+    demo_minute = asyncio.run(main.run_daily_push_cycle(
+        main.app.state.nessie, fake_sender, "2026-10-18T16:05"))
     assert first == {"users_notified": 1}
     assert second == {"users_notified": 0}
+    assert demo_minute == {"users_notified": 1}
     assert sent[0][0] == [token]
     assert sent[0][1] == "CreditPilot cash warning"
     assert sent[0][2].endswith("......")
@@ -208,6 +211,20 @@ def test_hurricane_simulation_uses_region_and_budget_then_deduplicates_push(clie
     assert saved.json()["alert_subscribed"] is True
     assert saved.json()["region"] == "Florida"
 
+    import asyncio
+    no_device = asyncio.run(main.run_hurricane_push_cycle(
+        main.app.state.nessie,
+        lambda *_: {"success_count": 1, "invalid_tokens": []},
+    ))
+    assert no_device == {"users_notified": 0}
+    connection = main.db()
+    try:
+        assert connection.execute(
+            "SELECT COUNT(*) FROM actions WHERE status='sending'"
+        ).fetchone()[0] == 0
+    finally:
+        connection.close()
+
     connection = main.db()
     try:
         connection.execute(
@@ -224,11 +241,13 @@ def test_hurricane_simulation_uses_region_and_budget_then_deduplicates_push(clie
         sent.append((tokens, title, body))
         return {"success_count": 1, "invalid_tokens": []}
 
-    import asyncio
     first = asyncio.run(main.run_hurricane_push_cycle(main.app.state.nessie, sender))
     second = asyncio.run(main.run_hurricane_push_cycle(main.app.state.nessie, sender))
+    demo_minute = asyncio.run(main.run_hurricane_push_cycle(
+        main.app.state.nessie, sender, "2026-10-18T16:05"))
     assert first == {"users_notified": 1}
     assert second == {"users_notified": 0}
+    assert demo_minute == {"users_notified": 1}
     assert sent[0][1] == "Hurricane budget simulation"
     assert "$100.00 short" in sent[0][2]
 

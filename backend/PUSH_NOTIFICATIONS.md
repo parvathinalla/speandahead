@@ -31,6 +31,8 @@ The phone asks for notification permission after a successful Auth0 login. Tappi
    FIREBASE_PROJECT_ID=your-project-id
    PUSH_NOTIFICATIONS_ENABLED=true
    PUSH_DAILY_HOUR_LOCAL=9
+   # Development demo only. Production rejects nonzero values.
+   PUSH_DEMO_INTERVAL_MINUTES=0
    HURRICANE_SIMULATION_ENABLED=true
    ```
 
@@ -49,3 +51,9 @@ python backend/scripts/send_hurricane_simulation.py
 ```
 
 The job still deduplicates per user and date. Chrome intentionally does not register for these mobile notifications.
+
+For a live judging demo, set `PUSH_DEMO_INTERVAL_MINUTES=1` in the private
+`backend/.env` and restart the API. Eligible cashflow warnings and subscribed
+hurricane simulations are then deduplicated per one-minute window. Restore the
+value to `0` after the demo to return to the once-daily schedule. Production
+mode rejects this demo setting.

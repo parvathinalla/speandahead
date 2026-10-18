@@ -5,7 +5,7 @@ Never place Nessie or Gemini API keys in Flutter or GitHub.
 """
 import asyncio
 import hashlib
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from decimal import Decimal
 from functools import lru_cache
 import json
@@ -52,6 +52,7 @@ GOOGLE_PLACES_API_KEY = os.getenv("GOOGLE_PLACES_API_KEY", "").strip()
 ORIGINS = [o.strip() for o in os.getenv("CORS_ORIGINS", "http://localhost:3000,http://localhost:8080,http://127.0.0.1:8080").split(",") if o.strip()]
 PUSH_ENABLED = os.getenv("PUSH_NOTIFICATIONS_ENABLED", "false").strip().lower() == "true"
 PUSH_DAILY_HOUR = int(os.getenv("PUSH_DAILY_HOUR_LOCAL", "9"))
+PUSH_DEMO_INTERVAL_MINUTES = int(os.getenv("PUSH_DEMO_INTERVAL_MINUTES", "0"))
 HURRICANE_SIMULATION_ENABLED = (
     os.getenv("HURRICANE_SIMULATION_ENABLED", "false").strip().lower() == "true"
 )
@@ -78,7 +79,11 @@ if ENVIRONMENT not in ("development", "test", "production"):
     raise RuntimeError("APP_ENV must be development, test, or production")
 if PUSH_DAILY_HOUR not in range(24):
     raise RuntimeError("PUSH_DAILY_HOUR_LOCAL must be between 0 and 23")
+if PUSH_DEMO_INTERVAL_MINUTES < 0 or PUSH_DEMO_INTERVAL_MINUTES > 60:
+    raise RuntimeError("PUSH_DEMO_INTERVAL_MINUTES must be between 0 and 60")
 if ENVIRONMENT == "production":
+    if PUSH_DEMO_INTERVAL_MINUTES:
+        raise RuntimeError("PUSH_DEMO_INTERVAL_MINUTES is forbidden in production")
     if AUTH_MODE != "auth0":
         raise RuntimeError("Production must use AUTH_MODE=auth0")
     if not os.getenv("AUTH0_DOMAIN") or not os.getenv("AUTH0_AUDIENCE"):
@@ -571,7 +576,8 @@ def _hurricane_push_text(result: dict) -> str:
     return f"Your plan covers storm costs with ${cushion:.2f} left......"
 
 
-async def run_daily_push_cycle(gateway_instance=None, sender=send_cashflow_warning):
+async def run_daily_push_cycle(gateway_instance=None, sender=send_cashflow_warning,
+                               dedupe_period: str | None = None):
     """Send each registered user at most one warning for today's forecast."""
     connection = db()
     try:
@@ -582,7 +588,7 @@ async def run_daily_push_cycle(gateway_instance=None, sender=send_cashflow_warni
 
     gateway_instance = gateway_instance or getattr(app.state, "nessie", None) or NessieGateway()
     delivered = 0
-    today = date.today().isoformat()
+    period = dedupe_period or date.today().isoformat()
     for owner in owners:
         reminder_id = None
         try:
@@ -593,14 +599,14 @@ async def run_daily_push_cycle(gateway_instance=None, sender=send_cashflow_warni
                 continue
 
             reminder_id = hashlib.sha256(
-                (owner + "|cashflow-push|" + today).encode("utf-8")).hexdigest()
+                (owner + "|cashflow-push|" + period).encode("utf-8")).hexdigest()
             connection = db()
             try:
                 claimed = connection.execute(
                     "INSERT OR IGNORE INTO actions(id,owner,action_type,status,payload) "
                     "VALUES (?,?,?,?,?)",
                     (reminder_id, owner, "cashflow_push", "sending",
-                     json.dumps({"date": today,
+                     json.dumps({"period": period,
                                  "shortfall_amount": forecast_result["shortfall_amount"],
                                  "first_shortfall_date": forecast_result["first_shortfall_date"]}))).rowcount == 1
                 tokens = [row["token"] for row in connection.execute(
@@ -608,7 +614,19 @@ async def run_daily_push_cycle(gateway_instance=None, sender=send_cashflow_warni
                 connection.commit()
             finally:
                 connection.close()
-            if not claimed or not tokens:
+            if not tokens:
+                if claimed:
+                    connection = db()
+                    try:
+                        connection.execute(
+                            "DELETE FROM actions WHERE id=? AND status='sending'",
+                            (reminder_id,),
+                        )
+                        connection.commit()
+                    finally:
+                        connection.close()
+                continue
+            if not claimed:
                 continue
 
             result = await asyncio.to_thread(
@@ -643,7 +661,8 @@ async def run_daily_push_cycle(gateway_instance=None, sender=send_cashflow_warni
 
 
 async def run_hurricane_push_cycle(gateway_instance=None,
-                                   sender=send_hurricane_warning):
+                                   sender=send_hurricane_warning,
+                                   dedupe_period: str | None = None):
     """Send one daily opt-in hurricane budget simulation per subscribed user."""
     connection = db()
     try:
@@ -655,11 +674,11 @@ async def run_hurricane_push_cycle(gateway_instance=None,
         connection.close()
 
     delivered = 0
-    today = date.today().isoformat()
+    period = dedupe_period or date.today().isoformat()
     for subscription in subscriptions:
         owner = subscription["owner"]
         reminder_id = hashlib.sha256(
-            (owner + "|hurricane-simulation|" + today).encode("utf-8")
+            (owner + "|hurricane-simulation|" + period).encode("utf-8")
         ).hexdigest()
         try:
             result = await hurricane_assessment(
@@ -672,7 +691,7 @@ async def run_hurricane_push_cycle(gateway_instance=None,
                     "INSERT OR IGNORE INTO actions(id,owner,action_type,status,payload) "
                     "VALUES (?,?,?,?,?)",
                     (reminder_id, owner, "hurricane_simulation_push", "sending",
-                     json.dumps({"date": today, "region": result["region"],
+                     json.dumps({"period": period, "region": result["region"],
                                  "potential_gap": result["potential_gap"]})),
                 ).rowcount == 1
                 tokens = [row["token"] for row in connection.execute(
@@ -681,7 +700,19 @@ async def run_hurricane_push_cycle(gateway_instance=None,
                 connection.commit()
             finally:
                 connection.close()
-            if not claimed or not tokens:
+            if not tokens:
+                if claimed:
+                    connection = db()
+                    try:
+                        connection.execute(
+                            "DELETE FROM actions WHERE id=? AND status='sending'",
+                            (reminder_id,),
+                        )
+                        connection.commit()
+                    finally:
+                        connection.close()
+                continue
+            if not claimed:
                 continue
 
             send_result = await asyncio.to_thread(
@@ -715,17 +746,28 @@ async def run_hurricane_push_cycle(gateway_instance=None,
 
 
 async def push_notification_loop():
-    """Run the server-side daily check; disabled unless explicitly configured."""
+    """Run daily alerts, or an explicitly enabled development demo interval."""
     last_attempt = None
     while True:
-        now = __import__("datetime").datetime.now()
+        now = datetime.now()
         today = now.date().isoformat()
-        if now.hour >= PUSH_DAILY_HOUR and last_attempt != today:
-            last_attempt = today
-            await run_daily_push_cycle()
+        if PUSH_DEMO_INTERVAL_MINUTES:
+            bucket_minute = (
+                now.minute // PUSH_DEMO_INTERVAL_MINUTES
+            ) * PUSH_DEMO_INTERVAL_MINUTES
+            period = now.replace(
+                minute=bucket_minute, second=0, microsecond=0
+            ).isoformat(timespec="minutes")
+            should_run = last_attempt != period
+        else:
+            period = today
+            should_run = now.hour >= PUSH_DAILY_HOUR and last_attempt != today
+        if should_run:
+            last_attempt = period
+            await run_daily_push_cycle(dedupe_period=period)
             if HURRICANE_SIMULATION_ENABLED:
-                await run_hurricane_push_cycle()
-        await asyncio.sleep(60 * 15)
+                await run_hurricane_push_cycle(dedupe_period=period)
+        await asyncio.sleep(15 if PUSH_DEMO_INTERVAL_MINUTES else 60 * 15)
 
 
 @app.get("/health")
