@@ -87,6 +87,45 @@ class ApiService {
   static Future<Map<String, dynamic>> getBills() =>
       _request('GET', '/api/bills');
 
+  static Future<Map<String, dynamic>> getDemoCatalog() =>
+      _request('GET', '/api/demo/catalog');
+
+  static Future<Map<String, dynamic>> getBankingProfile() =>
+      _request('GET', '/api/profile');
+
+  static Future<Map<String, dynamic>> updateMonthlyIncome(double income) =>
+      _request('POST', '/api/profile/income', {'monthly_income': income});
+
+  static Future<Map<String, dynamic>> getCardCatalog() =>
+      _request('GET', '/api/cards/catalog');
+
+  static Future<Map<String, dynamic>> getTransactions({
+    int limit = 50, int offset = 0,
+  }) => _request('GET', '/api/transactions?limit=$limit&offset=$offset');
+
+  static Future<Map<String, dynamic>> createBill({
+    required String payee, required double amount, required String dueDate,
+    String category = 'other', String frequency = 'monthly',
+  }) => _request('POST', '/api/bills/create', {
+        'payee': payee, 'payment_amount': amount,
+        'payment_date': dueDate, 'category': category,
+        'frequency': frequency,
+      });
+
+  static Future<Map<String, dynamic>> updateBill({
+    required String billId, required String payee,
+    required double amount, required String dueDate,
+    String category = 'other', String frequency = 'monthly',
+  }) => _request('POST', '/api/bills/$billId/update', {
+        'payee': payee, 'payment_amount': amount,
+        'payment_date': dueDate, 'category': category,
+        'frequency': frequency,
+      });
+
+  static Future<Map<String, dynamic>> deleteBill({
+    required String billId,
+  }) => _request('POST', '/api/bills/$billId/delete');
+
   static Future<Map<String, dynamic>> getBillForecast({
     int days = 14, double protectedReserve = 0,
   }) => _request('POST', '/api/bills/forecast', {
