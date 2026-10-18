@@ -105,6 +105,10 @@ def card_comparison(cards, purchase_amount, category, target_pct=30):
                                                        rule.get("reward_rates", {}).get("other", 0)))))
         choices.append({
             "card_name": name,
+            "display_name": rule.get("display_name", name),
+            "issuer": rule.get("issuer"),
+            "network": rule.get("network"),
+            "last4": rule.get("last4"),
             "account_id": rule.get("account_id"),
             "reward_rate_pct": float(Decimal(str(rule.get("reward_rates", {}).get(category,
                                                              rule.get("reward_rates", {}).get("other", 0)))) * 100),
