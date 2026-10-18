@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'package:http/http.dart' as http;
+import 'package:flutter/foundation.dart';
 import '../auth/auth_config.dart';
 
 /// All banking credentials stay in FastAPI; Flutter never calls Nessie directly.
@@ -15,7 +16,7 @@ class ApiException implements Exception {
 }
 
 class ApiService {
-  static String baseUrl = const String.fromEnvironment(
+  static final String baseUrl = const String.fromEnvironment(
     'API_BASE_URL', defaultValue: 'http://127.0.0.1:8000');
 
   // Auth0 SDK securely manages the session. Always retrieve a fresh access
@@ -26,6 +27,10 @@ class ApiService {
       String method, String path, [Map<String, dynamic>? body,
         Map<String, String>? extraHeaders]) async {
     try {
+      if (kReleaseMode && Uri.parse(baseUrl).scheme != 'https') {
+        throw ApiException(
+          'Release builds require HTTPS for protected API calls.');
+      }
       final uri = Uri.parse('$baseUrl$path');
       final accessToken = await tokenProvider?.call();
       final headers = <String, String>{
