@@ -36,7 +36,6 @@ def send_cashflow_warning(tokens: list[str], title: str, body: str) -> dict:
                 priority="high",
                 notification=messaging.AndroidNotification(
                     channel_id="cashflow_alerts",
-                    click_action="FLUTTER_NOTIFICATION_CLICK",
                 ),
             ),
             apns=messaging.APNSConfig(
