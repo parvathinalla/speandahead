@@ -4,6 +4,7 @@ AI never sets money amounts or authorizes a transfer. All monetary results
 are rounded to cents; utilization is a planning estimate, not a credit score.
 """
 from datetime import date, timedelta
+import calendar
 from decimal import Decimal, ROUND_HALF_UP
 from typing import Any
 
@@ -20,28 +21,65 @@ def clamp_positive(value: Any) -> Decimal:
     return max(Decimal("0.00"), money(value))
 
 
+def next_payment_date(bill, as_of=None):
+    """Project next monthly occurrence without changing the underlying bill."""
+    today = as_of or date.today()
+    start = date.fromisoformat(
+        str(bill.get("upcoming_payment_date") or bill["payment_date"])[:10])
+    if bill.get("frequency") != "monthly":
+        return start
+    due_day = int(bill.get("recurring_date") or start.day)
+    if start >= today:
+        return start
+    month = today.month
+    year = today.year
+    day = min(due_day, calendar.monthrange(year, month)[1])
+    proposed = date(year, month, day)
+    if proposed < today:
+        year, month = (year + 1, 1) if month == 12 else (year, month + 1)
+        proposed = date(year, month, min(due_day, calendar.monthrange(year, month)[1]))
+    return proposed
+
+
+def bill_occurrences(bill, today, cutoff):
+    if bill.get("status") not in ("pending", "recurring"):
+        return
+    when = next_payment_date(bill, today)
+    recurring = bill.get("frequency") == "monthly"
+    original_day = int(bill.get("recurring_date") or when.day)
+    while today <= when <= cutoff:
+        yield when
+        if not recurring:
+            break
+        year, month = ((when.year + 1, 1) if when.month == 12
+                       else (when.year, when.month + 1))
+        when = date(year, month, min(original_day, calendar.monthrange(year, month)[1]))
+
+
 def forecast(checking, savings, bills, horizon_days=14, reserve=0, today=None):
     today = today or date.today()
     cutoff = today + timedelta(days=horizon_days)
     normalized = []
     for row in bills:
-        when = date.fromisoformat(str(row.get("upcoming_payment_date") or row["payment_date"])[:10])
-        if today <= when <= cutoff and row.get("status") in ("pending", "recurring"):
+        for when in bill_occurrences(row, today, cutoff):
             normalized.append({
                 "name": row.get("nickname", row.get("payee", "Bill")),
                 "payee": row.get("payee", ""),
+                "bill_id": row.get("bill_id"),
+                "category": row.get("category", "other"),
                 "due_date": when.isoformat(),
                 "amount": amount(row["payment_amount"]),
                 "source": row.get("source", "nessie"),
             })
-    normalized.sort(key=lambda b: b["due_date"])
+    normalized.sort(key=lambda b: (b["due_date"], b["name"]))
     cash = money(checking)
     timeline = [{"date": today.isoformat(), "balance": amount(cash), "event": "Today"}]
     min_cash = cash
     for bill in normalized:
         cash -= money(bill["amount"])
         min_cash = min(min_cash, cash)
-        timeline.append({"date": bill["due_date"], "balance": amount(cash), "event": bill["name"]})
+        timeline.append({"date": bill["due_date"], "balance": amount(cash),
+                         "event": bill["name"]})
     shortage = clamp_positive(money(reserve) - min_cash)
     remaining_savings = clamp_positive(savings)
     transfer = min(shortage, remaining_savings)
@@ -59,6 +97,7 @@ def forecast(checking, savings, bills, horizon_days=14, reserve=0, today=None):
         "upcoming_bills": normalized,
         "timeline": timeline,
         "protected_reserve": amount(reserve),
+        "projection_assumption": "Future income is not included unless recorded as a received deposit.",
     }
 
 
