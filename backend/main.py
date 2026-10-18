@@ -839,13 +839,28 @@ async def preview_transfer(body: TransferRequest, request: Request, user=Depends
     return {"amount": body.amount, "source": "savings", "destination": "checking",
             "available_savings": balance, "protected_savings": body.savings_reserve,
             "max_safe_transfer": max_safe, "allowed": money(body.amount) <= money(max_safe),
-            "execution": "simulated" if PAYMENT_MODE == "simulate" else "Nessie sandbox only"}
+            "execution": "synthetic_simulation" if DATA_MODE == "synthetic"
+                else ("simulated" if PAYMENT_MODE == "simulate" else "Nessie sandbox only")}
 
 
 @app.post("/api/transfers/execute")
 async def execute_transfer(body: TransferRequest, request: Request, user=Depends(actor)):
     if not body.confirmed:
         raise HTTPException(400, "User must explicitly confirm this transfer")
+    if DATA_MODE == "synthetic":
+        if PAYMENT_MODE != "simulate":
+            raise HTTPException(409, "Synthetic banking supports simulation-only transfers")
+        manifest(user)
+        connection = db()
+        try:
+            try:
+                return demo_bank.simulated_transfer(
+                    connection, user, body.amount, body.idempotency_key,
+                    body.savings_reserve)
+            except ValueError as exc:
+                raise HTTPException(409, str(exc)) from None
+        finally:
+            connection.close()
     if PAYMENT_MODE == "nessie" and user != os.getenv("NESSIE_TRANSFER_ALLOWED_SUB", ""):
         raise HTTPException(403, "Sandbox transfer execution not authorized for this user")
     # A unique idempotency key is reserved before any Nessie write; unknown outcomes
