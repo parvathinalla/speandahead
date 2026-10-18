@@ -26,6 +26,7 @@ import jwt
 from finance_engine import (
     amount, autopay_preview, card_comparison, emergency, forecast, joint_risk, money
 )
+import synthetic_bank as demo_bank
 
 ROOT = Path(__file__).resolve().parent
 load_dotenv(ROOT / ".env")
@@ -33,6 +34,7 @@ NESSIE_URL = os.getenv("NESSIE_BASE_URL", "https://prod-api.nessieisreal.com").r
 MANIFEST = Path(os.getenv("SEED_MANIFEST_PATH", str(ROOT / "seed_manifest.json")))
 SQLITE = Path(os.getenv("DB_PATH", str(ROOT / "creditpilot.sqlite3")))
 AUTH_MODE = os.getenv("AUTH_MODE", "demo").strip().lower()
+DATA_MODE = os.getenv("DEMO_DATA_MODE", "synthetic" if AUTH_MODE == "auth0" else "nessie").strip().lower()
 ENVIRONMENT = os.getenv("APP_ENV", "development").strip().lower()
 TENANTS_DIR = Path(os.getenv("TENANT_MANIFEST_DIR", str(ROOT / "private" / "tenants")))
 PAYMENT_MODE = os.getenv("PAYMENT_MODE", "simulate").strip().lower()
@@ -40,6 +42,10 @@ ORIGINS = [o.strip() for o in os.getenv("CORS_ORIGINS", "http://localhost:3000,h
 
 if AUTH_MODE not in ("demo", "auth0"):
     raise RuntimeError("AUTH_MODE must be demo or auth0")
+if DATA_MODE not in ("nessie", "synthetic"):
+    raise RuntimeError("DEMO_DATA_MODE must be nessie or synthetic")
+if DATA_MODE == "synthetic" and AUTH_MODE != "auth0":
+    raise RuntimeError("Synthetic multiuser accounts require real Auth0 login")
 if PAYMENT_MODE not in ("simulate", "nessie"):
     raise RuntimeError("PAYMENT_MODE must be simulate or nessie")
 if PAYMENT_MODE == "nessie" and AUTH_MODE == "demo":
@@ -78,7 +84,11 @@ def db():
 @app.on_event("startup")
 def init_db():
     connection = db()
-    connection.close()
+    try:
+        if DATA_MODE == "synthetic":
+            demo_bank.initialize(connection)
+    finally:
+        connection.close()
 
 
 @app.middleware("http")
@@ -111,6 +121,12 @@ def manifest_path_for(user: str) -> Path:
 
 
 def has_linked_sandbox(user: str) -> bool:
+    if DATA_MODE == "synthetic":
+        connection = db()
+        try:
+            return demo_bank.get(connection, user) is not None
+        finally:
+            connection.close()
     path = manifest_path_for(user)
     if not path.is_file():
         return False
@@ -124,6 +140,15 @@ def has_linked_sandbox(user: str) -> bool:
 
 
 def manifest(user: str = "demo-sarah") -> dict:
+    if DATA_MODE == "synthetic":
+        connection = db()
+        try:
+            try:
+                return demo_bank.get_or_claim(connection, user)
+            except (ValueError, RuntimeError) as exc:
+                raise HTTPException(503, str(exc)) from None
+        finally:
+            connection.close()
     path = manifest_path_for(user)
     if not path.is_file():
         raise HTTPException(409, "No sandbox accounts linked to your profile. Complete onboarding.")
@@ -192,11 +217,20 @@ async def actor(authorization: Optional[str] = Header(None),
 
 @app.get("/api/me")
 def me(user=Depends(actor)):
-    linked = has_linked_sandbox(user)
+    # Claim an isolated synthetic profile on first VERIFIED Auth0 login.
+    if DATA_MODE == "synthetic":
+        portfolio = manifest(user)
+        linked = True
+        source = demo_bank.DATA_SOURCE
+        profile_id = portfolio["portfolio_id"]
+    else:
+        linked = has_linked_sandbox(user)
+        source = "nessie_sandbox"
+        profile_id = None
     return {"authenticated": True, "user_id": user,
             "sandbox_linked": linked, "onboarding_required": not linked,
-            "security_mode": AUTH_MODE,
-            "data_source": "fictional_nessie_sandbox"}
+            "security_mode": AUTH_MODE, "data_source": source,
+            "portfolio_id": profile_id, "is_synthetic": DATA_MODE == "synthetic"}
 
 
 class NessieGateway:
@@ -300,6 +334,8 @@ def gateway(request: Request):
 
 
 async def accounts(g: NessieGateway, m: dict) -> dict:
+    if m.get("source") == demo_bank.DATA_SOURCE:
+        return m["accounts"]
     ids = m["ids"]["accounts"]
     if isinstance(g, NessieGateway):
         return await g.account_snapshot(ids)
@@ -320,18 +356,21 @@ def account_amount(record):
 def card_rules(m, account_values):
     meta = m.get("app_scenario", {})
     rules = {}
-    for name in ("card_a", "card_b"):
-        x = meta.get(name)
-        if not x or not x.get("limit_usd"):
-            raise HTTPException(503, "Missing simulated credit limit or rewards rules")
+    for name, x in meta.items():
+        if name not in account_values or not x.get("limit_usd"):
+            continue
+        item = account_values[name]
         rules[name] = {
-            "account_id": account_values[name]["_id"],
-            "balance": account_amount(account_values[name]),
+            "account_id": item["_id"],
+            "balance": account_amount(item),
             "credit_limit": x["limit_usd"],
             "reward_rates": x.get("rewards", {}),
+            "display_name": x.get("display_name", item.get("nickname", name)),
+            "issuer": x.get("issuer", item.get("institution", "Demo issuer")),
+            "last4": x.get("last4", item.get("last4", "0000")),
+            "network": x.get("network", item.get("network", "Card")),
         }
     return rules
-
 
 def bills(m: dict):
     return list(m["app_bills"].values())
@@ -340,15 +379,19 @@ def bills(m: dict):
 def forecast_from(a, m, days=14, reserve=0):
     result = forecast(account_amount(a["checking"]), account_amount(a["savings"]),
                       bills(m), days, reserve)
-    result["data_sources"] = {"balances": "nessie_sandbox",
-                              "bills": "local_app_simulation"}
+    result["data_sources"] = {
+        "balances": m.get("source", "nessie_sandbox"),
+        "bills": m.get("source", "local_app_simulation")
+                 if m.get("source") == demo_bank.DATA_SOURCE else "local_app_simulation",
+    }
     return result
 
 
 @app.get("/health")
 def health():
     return {"status": "ok", "app": "CreditPilot", "auth_mode": AUTH_MODE,
-            "payment_mode": PAYMENT_MODE, "seed_manifest_present": MANIFEST.is_file()}
+            "data_mode": DATA_MODE, "payment_mode": PAYMENT_MODE,
+            "seed_manifest_present": MANIFEST.is_file()}
 
 
 @app.get("/api/dashboard")
@@ -359,7 +402,9 @@ async def dashboard(request: Request, user=Depends(actor)):
     return {"accounts": [
         {"kind": name, "id": item["_id"], "type": item.get("type"),
          "nickname": item.get("nickname"), "balance": account_amount(item),
-         "source": "nessie_sandbox"}
+         "institution": item.get("institution"), "last4": item.get("last4"),
+         "currency": "USD", "credit_limit": item.get("credit_limit"),
+         "source": m.get("source", "nessie_sandbox")}
         for name, item in a.items()],
         "bill_forecast": f, "data_sources": f["data_sources"]}
 
@@ -371,7 +416,8 @@ async def get_accounts(request: Request, user=Depends(actor)):
 
 @app.get("/api/bills")
 def get_bills(user=Depends(actor)):
-    return {"bills": bills(manifest(user)), "source": "local_app_simulation"}
+    m = manifest(user)
+    return {"bills": bills(m), "source": m.get("source", "local_app_simulation")}
 
 
 class BillForecastRequest(BaseModel):
@@ -400,14 +446,16 @@ async def cards_evaluate(body: CardRequest, request: Request, user=Depends(actor
     result = card_comparison(card_rules(m, a), body.purchase_amount,
                              body.purchase_category.lower(), body.utilization_target_pct)
     result["merchant_name"] = body.merchant_name
-    result["data_sources"] = {"balances": "nessie_sandbox",
-                              "rewards_and_limits": "local_app_simulation"}
+    result["data_sources"] = {
+        "balances": m.get("source", "nessie_sandbox"),
+        "rewards_and_limits": m.get("source", "local_app_simulation"),
+    }
     return result
 
 
 class AutopayRequest(BaseModel):
     target_utilization_pct: float = Field(29, ge=0, le=100)
-    account: str = Field("card_a", pattern="^(card_a|card_b)$")
+    account: str = Field("card_1", pattern="^card_[a-zA-Z0-9]+$")
     safety_buffer: float = Field(100, ge=0)
     horizon_days: int = Field(14, ge=1, le=60)
     assumed_savings_transfer: float = Field(
@@ -419,8 +467,14 @@ async def calculate_autopay(body, g, user):
     m = manifest(user)
     a = await accounts(g, m)
     f = forecast_from(a, m, body.horizon_days)
-    rule = card_rules(m, a)[body.account]
-    x = m["app_scenario"][body.account]
+    available_cards = card_rules(m, a)
+    account_key = body.account
+    if account_key == "card_1" and account_key not in available_cards and "card_a" in available_cards:
+        account_key = "card_a"  # Legacy Nessie sample only.
+    if account_key not in available_cards:
+        raise HTTPException(422, "Unknown credit card for this signed-in user")
+    rule = available_cards[account_key]
+    x = m["app_scenario"][account_key]
     statement = (date.today() + timedelta(days=int(x.get("statement_closes_in_days", 9)))).isoformat()
     transfer = money(body.assumed_savings_transfer)
     remaining_savings = money(account_amount(a["savings"])) - transfer
@@ -434,9 +488,13 @@ async def calculate_autopay(body, g, user):
     result["assumed_savings_transfer"] = amount(transfer)
     result["savings_after_assumed_transfer"] = amount(remaining_savings)
     result["is_what_if_scenario"] = transfer > 0
-    result["account"] = body.account
-    result["data_sources"] = {"balances": "nessie_sandbox",
-                              "credit_limit_and_statement": "local_app_simulation"}
+    result["account"] = account_key
+    result["card_display_name"] = rule["display_name"]
+    result["card_last4"] = rule["last4"]
+    result["data_sources"] = {
+        "balances": m.get("source", "nessie_sandbox"),
+        "credit_limit_and_statement": m.get("source", "local_app_simulation"),
+    }
     return result
 
 
