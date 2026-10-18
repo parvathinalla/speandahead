@@ -75,10 +75,6 @@ GitHub Actions checks backend tests and Flutter analysis/tests.
 | Rohith | Financial calculations and scenario tests |
 | Ajit | Auth0 integration support, Gemini explanations, end-to-end QA |
 
-## Important limitations
-
-This is a hackathon **demo**, not a consumer banking product. It cannot intercept bank-level joint-owner activity, guarantee credit scores, initiate real credit-card issuer AutoPay, or send reports to bureaus. `AUTH_MODE=demo` is solely for fictional local demo data; production must validate Auth0 tokens and use HTTPS. No real API key belongs in the repository.
-
 ## Repository
 
 https://github.com/parvathinalla/speandahead
