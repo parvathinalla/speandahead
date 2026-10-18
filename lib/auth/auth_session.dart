@@ -81,6 +81,11 @@ class AuthSession extends ChangeNotifier {
   Future<void> signIn({bool signUp = false}) async {
     if (_busy || _configError != null) return;
     if (AuthConfig.debugDemo) {
+      _profile ??= const AuthProfile(
+        subject: 'demo-sarah', displayName: 'Demo Member',
+        email: 'demo@example.invalid',
+      );
+      ApiService.tokenProvider = null;
       await refreshLink();
       return;
     }
