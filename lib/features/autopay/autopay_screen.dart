@@ -20,7 +20,7 @@ class AutoPayScreen extends StatelessWidget {
         // const checking = 600.0;
         // const bills = 250.0;
         // const reserve = 100.0;
-        // final targetUtil = state.targetUtilizationPct;
+        final targetUtil = state.targetUtilizationPct;
         // final theoreticalPaydown = state.theoreticalPaydown; // $460
         // final safePayment = state.maxSafePaymentToday; // $250
         // final targetReachable = state.targetReachable; // false
