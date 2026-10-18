@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'package:http/http.dart' as http;
+import '../auth/auth_config.dart';
 
 /// All banking credentials stay in FastAPI; Flutter never calls Nessie directly.
 /// Run Web/Windows: flutter run -d chrome --dart-define=API_BASE_URL=http://127.0.0.1:8000
@@ -110,12 +111,18 @@ class ApiService {
         'amount': amount, 'merchant': merchant, 'confirmed': true,
       });
 
+  static Future<Map<String, dynamic>> getJointInvitations() =>
+      _request('GET', '/api/joint/invitations');
+
+  static Future<Map<String, dynamic>> getMyJointProposals() =>
+      _request('GET', '/api/joint/proposals');
+
   static Future<Map<String, dynamic>> decideJointProposal({
     required String proposalId, required bool approve,
   }) => _request(
       'POST', '/api/joint/proposals/' + proposalId + '/decision',
       {'approve': approve},
-      {'X-Demo-User': 'jamie'}); // Only works as demo user in AUTH_MODE=demo.
+      AuthConfig.debugDemo ? {'X-Demo-User': 'jamie'} : null);
 
   static Future<Map<String, dynamic>> evaluateEmergency({
     double cost = 1000, double buffer = 300, int days = 14,
