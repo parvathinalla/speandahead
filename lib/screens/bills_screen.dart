@@ -13,6 +13,8 @@ class _BillsScreenState extends State<BillsScreen> {
   Map<String, dynamic>? forecast;
   List<Map<String, dynamic>> allBills = [];
   List<Map<String, dynamic>> transactions = [];
+  List<Map<String, dynamic>> bankAccounts = [];
+  Map<String, dynamic>? bankProfile;
   bool synthetic = false, loading = true;
   String? error;
 
@@ -29,7 +31,13 @@ class _BillsScreenState extends State<BillsScreen> {
     if (mounted) setState(() { loading = true; error = null; });
     try {
       final bills = await ApiService.getBills();
-      final result = await ApiService.getBillForecast();
+      final dashboard = await ApiService.getDashboard();
+      final result = Map<String, dynamic>.from(
+          dashboard['bill_forecast'] as Map);
+      final accounts = (dashboard['accounts'] as List? ?? [])
+          .map((item) => Map<String, dynamic>.from(item as Map))
+          .toList();
+      Map<String, dynamic>? profile;
       final isSynthetic = bills['source'] == 'synthetic_banking_demo';
       final entries = (bills['bills'] as List? ?? [])
           .map((item) => Map<String, dynamic>.from(item as Map))
@@ -38,6 +46,7 @@ class _BillsScreenState extends State<BillsScreen> {
           .toString().compareTo(b['payment_date'].toString()));
       List<Map<String, dynamic>> recent = [];
       if (isSynthetic) {
+        profile = await ApiService.getBankingProfile();
         final tx = await ApiService.getTransactions(limit: 8);
         recent = (tx['transactions'] as List? ?? [])
             .map((item) => Map<String, dynamic>.from(item as Map))
@@ -45,10 +54,52 @@ class _BillsScreenState extends State<BillsScreen> {
       }
       if (mounted) setState(() {
         forecast = result; allBills = entries; transactions = recent;
+        bankAccounts = accounts; bankProfile = profile;
         synthetic = isSynthetic; loading = false;
       });
     } catch (exception) {
       if (mounted) setState(() { error = exception.toString(); loading = false; });
+    }
+  }
+
+  Future<void> editIncome() async {
+    if (!synthetic) return;
+    final ctrl = TextEditingController(
+      text: bankProfile?['monthly_income']?.toString() ?? '0');
+    try {
+      final yes = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('Adjust monthly demo income'),
+          content: Column(mainAxisSize: MainAxisSize.min, children: [
+            TextField(
+              controller: ctrl,
+              autofocus: true,
+              keyboardType: const TextInputType.numberWithOptions(decimal: true),
+              decoration: const InputDecoration(
+                labelText: 'Expected monthly income (USD)',
+                helperText: 'Financial scenario only; no verified payroll'),
+            ),
+          ]),
+          actions: [
+            TextButton(onPressed: () => Navigator.pop(ctx, false),
+                child: const Text('Cancel')),
+            FilledButton(onPressed: () => Navigator.pop(ctx, true),
+                child: const Text('Save')),
+          ],
+        ));
+      if (yes != true) return;
+      final income = double.tryParse(ctrl.text.trim());
+      if (income == null || income < 0) {
+        throw ApiException('Enter a valid nonnegative monthly income');
+      }
+      await ApiService.updateMonthlyIncome(income);
+      if (mounted) await reload();
+    } catch (exception) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(exception.toString())));
+    } finally {
+      ctrl.dispose();
     }
   }
 
@@ -242,6 +293,22 @@ class _BillsScreenState extends State<BillsScreen> {
             : 'Nessie sandbox balance + local bill scenario',
             style: const TextStyle(fontSize: 11, color: AppTheme.textSecondary)),
         const SizedBox(height: 14),
+        if (synthetic && bankProfile != null)
+          Card(color: AppTheme.brandBlueLight,
+            child: ListTile(
+              leading: const Icon(Icons.account_balance_wallet_outlined,
+                  color: AppTheme.brandNavy),
+              title: Text('Personal financial scenario • ' +
+                (bankProfile!['persona']?.toString().replaceAll('_', ' ') ?? 'member')),
+              subtitle: Text('Monthly income: ' +
+                  dollars(bankProfile!['monthly_income']) +
+                  ' • ' + bankAccounts.length.toString() + ' fictional accounts'),
+              trailing: IconButton(
+                onPressed: editIncome,
+                tooltip: 'Edit monthly income',
+                icon: const Icon(Icons.edit_outlined)),
+            )),
+        const SizedBox(height: 6),
         Row(children: [
           Expanded(child: metric('Checking', dollars(d['checking_balance']))),
           const SizedBox(width: 10),
@@ -259,6 +326,27 @@ class _BillsScreenState extends State<BillsScreen> {
               const Text('Scenario estimate, not a guaranteed future balance.',
                 style: TextStyle(fontSize: 11)),
             ]))),
+        if (bankAccounts.isNotEmpty) ...[
+          const SizedBox(height: 14),
+          const Text('My fictional accounts', style: TextStyle(
+              fontWeight: FontWeight.w800, fontSize: 16)),
+          Card(child: Column(children: [
+            for (final account in bankAccounts)
+              ListTile(
+                dense: true,
+                leading: Icon(
+                  account['type'] == 'Credit Card'
+                      ? Icons.credit_card_outlined : Icons.account_balance_outlined,
+                  color: AppTheme.brandBlue),
+                title: Text(account['nickname'].toString(),
+                  maxLines: 1, overflow: TextOverflow.ellipsis),
+                subtitle: Text((account['institution'] ?? 'Demo institution').toString() +
+                    ' •••• ' + (account['last4'] ?? '0000').toString()),
+                trailing: Text(dollars(account['balance']),
+                  style: const TextStyle(fontWeight: FontWeight.w800)),
+              ),
+          ])),
+        ],
         const SizedBox(height: 14),
         Row(children: [
           Expanded(child: Text('Upcoming bills (' + allBills.length.toString() + ')',
