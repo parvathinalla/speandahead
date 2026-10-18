@@ -15,6 +15,9 @@ class ApiException implements Exception {
 }
 
 class ApiService {
+  static Future<Map<String, dynamic>> dailyCashflowReminder() =>
+      _request('POST', '/api/notifications/cashflow/daily');
+
   static Future<Map<String, dynamic>> jointMembership() =>
       _request('GET', '/api/joint/membership');
 

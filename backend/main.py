@@ -478,6 +478,33 @@ async def dashboard(request: Request, user=Depends(actor)):
         "bill_forecast": f, "data_sources": f["data_sources"]}
 
 
+@app.post("/api/notifications/cashflow/daily")
+async def daily_cashflow_reminder(request: Request, user=Depends(actor)):
+    """Return at most one 7-day shortfall reminder per user per calendar day."""
+    m = manifest(user)
+    a = await accounts(gateway(request), m)
+    forecast_result = forecast_from(a, m, days=7)
+    should_notify = False
+    if forecast_result["is_shortfall"]:
+        day = date.today().isoformat()
+        reminder_id = hashlib.sha256(
+            (user + "|cashflow-shortfall|" + day).encode("utf-8")).hexdigest()
+        connection = db()
+        try:
+            cursor = connection.execute(
+                "INSERT OR IGNORE INTO actions(id,owner,action_type,status,payload) "
+                "VALUES (?,?,?,?,?)",
+                (reminder_id, user, "cashflow_reminder", "shown",
+                 json.dumps({"date": day,
+                             "shortfall_amount": forecast_result["shortfall_amount"],
+                             "first_shortfall_date": forecast_result["first_shortfall_date"]})))
+            connection.commit()
+            should_notify = cursor.rowcount == 1
+        finally:
+            connection.close()
+    return {"should_notify": should_notify, "forecast": forecast_result}
+
+
 @app.get("/api/accounts")
 async def get_accounts(request: Request, user=Depends(actor)):
     return {"accounts": (await dashboard(request, user))["accounts"]}

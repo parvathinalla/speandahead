@@ -84,6 +84,24 @@ def test_bill_forecast(client):
     assert response.json()["total_bills_due"] == 400
 
 
+def test_daily_cashflow_reminder_is_sent_once(client):
+    first = client.post("/api/notifications/cashflow/daily")
+    second = client.post("/api/notifications/cashflow/daily")
+    assert first.status_code == 200
+    assert first.json()["should_notify"] is True
+    assert first.json()["forecast"]["first_shortfall_amount"] == 50
+    assert second.status_code == 200
+    assert second.json()["should_notify"] is False
+
+
+def test_daily_cashflow_reminder_is_silent_without_deficit(client):
+    main.app.state.nessie.data["checking"] = 600
+    response = client.post("/api/notifications/cashflow/daily")
+    assert response.status_code == 200
+    assert response.json()["should_notify"] is False
+    assert response.json()["forecast"]["is_shortfall"] is False
+
+
 def test_card_recommendation(client):
     response = client.post("/api/cards/evaluate",
                            json={"purchase_amount": 120, "purchase_category": "groceries"})

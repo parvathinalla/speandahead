@@ -38,8 +38,10 @@ class _MainShellState extends State<MainShell> {
     _checkBillShortfall();
     _jointTimer =
         Timer.periodic(const Duration(seconds: 10), (_) => _checkJoint());
+    // Cashflow reminders are intentionally daily so the warning is useful
+    // without becoming noisy. The initial check covers the day the app opens.
     _billTimer = Timer.periodic(
-        const Duration(minutes: 5), (_) => _checkBillShortfall());
+        const Duration(days: 1), (_) => _checkBillShortfall());
   }
 
   @override
@@ -83,11 +85,13 @@ class _MainShellState extends State<MainShell> {
     if (_checkingBills) return;
     _checkingBills = true;
     try {
-      final dashboard = await ApiService.getDashboard();
+      final reminder = await ApiService.dailyCashflowReminder();
       final forecast =
-          Map<String, dynamic>.from(dashboard['bill_forecast'] as Map);
+          Map<String, dynamic>.from(reminder['forecast'] as Map);
       final alert = forecast['is_shortfall'] == true ? forecast : null;
-      final preview = alert == null ? null : _billPreview(alert);
+      final preview = alert == null || reminder['should_notify'] != true
+          ? null
+          : _billPreview(alert);
       if (mounted) {
         setState(() => _billAlert = alert);
         if (preview != null && preview != _lastBillPreview) {
