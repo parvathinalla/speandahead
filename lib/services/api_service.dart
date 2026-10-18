@@ -215,6 +215,32 @@ class ApiService {
         if (emergencyCost != null) 'emergency_cost': emergencyCost,
       });
 
+  /// Personalized agent. The backend independently loads the signed-in
+  /// user's financial sandbox; clients cannot submit arbitrary balances.
+  static Future<Map<String, dynamic>> agentChat(String message) =>
+      _request('POST', '/api/agent/chat', {'message': message});
+
+  static Future<Map<String, dynamic>> agentSettings() =>
+      _request('GET', '/api/agent/settings');
+
+  static Future<Map<String, dynamic>> agentConsent(bool enabled) =>
+      _request('POST', '/api/agent/settings', {'enabled': enabled});
+
+  static Future<Map<String, dynamic>> agentMemories() =>
+      _request('GET', '/api/agent/memories');
+
+  static Future<Map<String, dynamic>> agentHistory() =>
+      _request('GET', '/api/agent/history');
+
+  static Future<Map<String, dynamic>> rememberPreference(String note) =>
+      _request('POST', '/api/agent/memories', {'note': note});
+
+  static Future<Map<String, dynamic>> deletePreference(String id) =>
+      _request('POST', '/api/agent/memories/$id/delete');
+
+  static Future<Map<String, dynamic>> clearAgentMemory() =>
+      _request('POST', '/api/agent/memories/clear');
+
   static Future<Map<String, dynamic>> explain({
     required String topic, required Map<String, dynamic> result,
   }) => _request('POST', '/api/ai/explain', {
