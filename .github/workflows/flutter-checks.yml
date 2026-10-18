@@ -24,3 +24,10 @@ jobs:
       - run: flutter pub get
       - run: flutter analyze --no-fatal-infos lib test
       - run: flutter test
+      - name: Compile production Flutter Web bundle (public placeholder Client ID)
+        run: >-
+          flutter build web --release
+          --dart-define=AUTH0_DOMAIN=ci-tenant.us.auth0.com
+          --dart-define=AUTH0_WEB_CLIENT_ID=ci-public-client-id
+          --dart-define=AUTH0_AUDIENCE=https://api.creditpilot.test
+          --dart-define=API_BASE_URL=https://api.creditpilot.example

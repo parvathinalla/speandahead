@@ -77,3 +77,12 @@ backend/seed_manifest.json.tmp
 __pycache__/
 .venv/
 .env.local
+
+# Per-user Auth0-bound Nessie mappings (contains private account associations)
+/backend/private/
+/backend/private/**
+
+# Mobile distribution signing materials
+/android/key.properties
+*.jks
+*.keystore

@@ -225,3 +225,148 @@ def test_nessie_gateway_retries_only_safe_get(monkeypatch):
         assert calls.count("POST") == 1
 
     asyncio.run(verify())
+
+
+def test_auth0_multiuser_isolation_with_real_rs256_tokens(client, monkeypatch, tmp_path):
+    """JWTs must have valid RS256 signature, issuer, audience, expiry and subject.
+    Newly registered users cannot inherit Sarah's original Nessie mapping.
+    """
+    import hashlib
+    from datetime import datetime, timezone
+    from types import SimpleNamespace
+    from cryptography.hazmat.primitives.asymmetric import rsa
+    from scripts.link_user_sandbox import provision
+    import jwt
+
+    priv = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    pub = priv.public_key()
+
+    class StaticKeys:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def get_signing_key_from_jwt(self, token):
+            return SimpleNamespace(key=pub)
+
+    monkeypatch.setattr(main.jwt, "PyJWKClient", StaticKeys)
+    monkeypatch.setattr(main, "AUTH_MODE", "auth0")
+    monkeypatch.setattr(main, "TENANTS_DIR", tmp_path / "isolated_users")
+    monkeypatch.setenv("AUTH0_DOMAIN", "fictional-tenant.us.auth0.com")
+    monkeypatch.setenv("AUTH0_AUDIENCE", "https://api.creditpilot.test")
+
+    def token(sub, **overrides):
+        claims = {
+            "sub": sub,
+            "iss": "https://fictional-tenant.us.auth0.com/",
+            "aud": "https://api.creditpilot.test",
+            "iat": int(datetime.now(timezone.utc).timestamp()),
+            "exp": int(datetime.now(timezone.utc).timestamp()) + 300,
+        }
+        claims.update(overrides)
+        return jwt.encode(claims, priv, algorithm="RS256", headers={"kid": "test"})
+
+    def headers(sub, **overrides):
+        return {"Authorization": "Bearer " + token(sub, **overrides)}
+
+    owner = "auth0|alice123"
+    guest = "auth0|bob123"
+    partner = "auth0|partner123"
+    # A real signup token is accepted but sees an empty onboarding state.
+    new_user = client.get("/api/me", headers=headers(guest))
+    assert new_user.status_code == 200, new_user.text
+    assert new_user.json()["sandbox_linked"] is False
+    assert new_user.json()["security_mode"] == "auth0"
+    assert client.get("/api/dashboard", headers=headers(guest)).status_code == 409
+
+    # Local admin explicitly assigns the seed to Alice.
+    provision(main.MANIFEST, main.TENANTS_DIR, owner, partner)
+    owner_status = client.get("/api/me", headers=headers(owner))
+    assert owner_status.status_code == 200
+    assert owner_status.json()["sandbox_linked"] is True
+    assert client.get("/api/dashboard", headers=headers(owner)).status_code == 200
+
+    # Bob cannot read Alice's account or perform actions using that mapping.
+    for endpoint in ("/api/dashboard", "/api/accounts", "/api/bills"):
+        assert client.get(endpoint, headers=headers(guest)).status_code == 409
+
+    invalid = [
+        headers(owner, aud="https://another-app.invalid"),
+        headers(owner, iss="https://evil.us.auth0.com/"),
+        headers(owner, exp=1),
+    ]
+    for bad in invalid:
+        assert client.get("/api/me", headers=bad).status_code == 401
+
+    # Even a correctly signed JWT from a wrong key is rejected.
+    attacker_private = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    forged = jwt.encode({
+        "sub": owner, "iss": "https://fictional-tenant.us.auth0.com/",
+        "aud": "https://api.creditpilot.test",
+        "exp": int(datetime.now(timezone.utc).timestamp()) + 300,
+    }, attacker_private, algorithm="RS256", headers={"kid": "fake"})
+    assert client.get("/api/me",
+                      headers={"Authorization": "Bearer " + forged}).status_code == 401
+
+    # A different user cannot approve the owner's proposal; only invited partner.
+    proposal = client.post(
+        "/api/joint/proposals",
+        json={"amount": 850, "merchant": "Fictional electronics", "confirmed": True},
+        headers=headers(owner),
+    )
+    assert proposal.status_code == 200, proposal.text
+    proposal_id = proposal.json()["proposal_id"]
+    decision = "/api/joint/proposals/" + proposal_id + "/decision"
+    assert client.post(decision, json={"approve": True}, headers=headers(guest)).status_code == 403
+    assert client.post(decision, json={"approve": True}, headers=headers(owner)).status_code == 403
+    approved = client.post(decision, json={"approve": True}, headers=headers(partner))
+    assert approved.status_code == 200, approved.text
+    assert approved.json()["status"] == "approved_simulation"
+
+
+def test_provisioning_does_not_share_nessie_accounts_between_auth0_users(tmp_path):
+    from scripts.link_user_sandbox import provision
+    from pathlib import Path
+    import json
+
+    directory = tmp_path / "tenants"
+    source1 = tmp_path / "seed1.json"
+    source2 = tmp_path / "seed2.json"
+    payload = {
+        "ids": {"accounts": {str(i): "account-" + str(i) for i in range(6)}},
+        "app_bills": {"rent": {"payment_amount": 100}},
+    }
+    source1.write_text(json.dumps(payload))
+    source2.write_text(json.dumps(payload))
+    result = provision(source1, directory, "auth0|first")
+    assert result.is_file()
+    assert json.loads(result.read_text())["owner_sub"] == "auth0|first"
+    with pytest.raises(ValueError, match="never be shared"):
+        provision(source2, directory, "auth0|second")
+    with pytest.raises(ValueError, match="already bound"):
+        provision(source1, directory, "auth0|first")
+
+
+def test_only_invited_user_sees_joint_approval_inbox(client):
+    created = client.post("/api/joint/proposals",
+                          json={"amount": 850, "confirmed": True})
+    assert created.status_code == 200
+    assert client.get("/api/joint/invitations").json()["invitations"] == []
+    stranger = client.get("/api/joint/invitations",
+                          headers={"X-Demo-User": "mallory"})
+    assert stranger.status_code == 200
+    assert stranger.json()["invitations"] == []
+    partner = client.get("/api/joint/invitations",
+                         headers={"X-Demo-User": "jamie"})
+    assert partner.status_code == 200
+    invites = partner.json()["invitations"]
+    assert len(invites) == 1
+    assert invites[0]["proposal_id"] == created.json()["proposal_id"]
+    owned = client.get("/api/joint/proposals")
+    assert owned.status_code == 200
+    assert len(owned.json()["proposals"]) == 1
+    status = client.post(
+        "/api/joint/proposals/" + invites[0]["proposal_id"] + "/decision",
+        headers={"X-Demo-User": "jamie"}, json={"approve": True})
+    assert status.status_code == 200
+    assert client.get("/api/joint/invitations",
+                      headers={"X-Demo-User": "jamie"}).json()["invitations"] == []

@@ -7,6 +7,7 @@ import asyncio
 import hashlib
 from datetime import date, timedelta
 from decimal import Decimal
+from functools import lru_cache
 import json
 import os
 from pathlib import Path
@@ -80,6 +81,26 @@ def init_db():
     connection.close()
 
 
+@app.middleware("http")
+async def security_headers(request: Request, call_next):
+    response = await call_next(request)
+    if request.url.path.startswith("/api/"):
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["Pragma"] = "no-cache"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["Referrer-Policy"] = "no-referrer"
+    response.headers["X-Frame-Options"] = "DENY"
+    return response
+
+
+@lru_cache(maxsize=8)
+def auth0_jwks(domain: str):
+    # Reuse Auth0 JWKS cache instead of fetching its public keys per request.
+    return jwt.PyJWKClient(
+        "https://" + domain + "/.well-known/jwks.json",
+        timeout=5, cache_jwk_set=True, lifespan=300)
+
+
 def manifest_path_for(user: str) -> Path:
     if AUTH_MODE == "demo":
         return MANIFEST
@@ -133,7 +154,7 @@ async def actor(authorization: Optional[str] = Header(None),
     token = authorization.split(" ", 1)[1]
     try:
         # JWKS are validated by PyJWT. Blocking network work stays off the event loop.
-        jwks = jwt.PyJWKClient("https://" + domain + "/.well-known/jwks.json", timeout=5)
+        jwks = auth0_jwks(domain)
         signing_key = await asyncio.to_thread(jwks.get_signing_key_from_jwt, token)
         claims = jwt.decode(token, signing_key.key, algorithms=["RS256"],
                             audience=audience, issuer="https://" + domain + "/",
@@ -152,6 +173,7 @@ def me(user=Depends(actor)):
     linked = has_linked_sandbox(user)
     return {"authenticated": True, "user_id": user,
             "sandbox_linked": linked, "onboarding_required": not linked,
+            "security_mode": AUTH_MODE,
             "data_source": "fictional_nessie_sandbox"}
 
 
@@ -544,6 +566,54 @@ def joint_decision(proposal_id: str, body: JointDecision, user=Depends(actor)):
         connection.commit()
         return {"proposal_id": proposal_id, "status": status,
                 "note": "No Nessie transaction was executed"}
+    finally:
+        connection.close()
+
+
+@app.get("/api/joint/invitations")
+def joint_invitations(user=Depends(actor)):
+    # A new Auth0 user may approve an invitation even before linking
+    # their own fictional bank sandbox.
+    connection = db()
+    try:
+        rows = connection.execute(
+            "SELECT id, owner, status, payload, created_at FROM actions "
+            "WHERE action_type='joint_proposal' AND status='awaiting_partner'"
+        ).fetchall()
+        results = []
+        for row in rows:
+            payload = json.loads(row["payload"])
+            if payload.get("partner_sub") != user:
+                continue
+            evaluation = payload.get("evaluation", {})
+            results.append({
+                "proposal_id": row["id"],
+                "merchant": evaluation.get("merchant", ""),
+                "amount": evaluation.get("amount", 0),
+                "status": row["status"],
+                "created_at": row["created_at"],
+                "scope": "app_simulation",
+            })
+        return {"invitations": results}
+    finally:
+        connection.close()
+
+
+@app.get("/api/joint/proposals")
+def my_joint_proposals(user=Depends(actor)):
+    connection = db()
+    try:
+        rows = connection.execute(
+            "SELECT id, status, payload, created_at FROM actions "
+            "WHERE action_type='joint_proposal' AND owner=? "
+            "ORDER BY created_at DESC LIMIT 100", (user,)
+        ).fetchall()
+        return {"proposals": [
+            {"proposal_id": r["id"], "status": r["status"],
+             "amount": json.loads(r["payload"]).get("evaluation", {}).get("amount"),
+             "created_at": r["created_at"]}
+            for r in rows
+        ]}
     finally:
         connection.close()
 
