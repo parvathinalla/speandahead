@@ -304,7 +304,7 @@ class _EmergencyScreenState extends State<EmergencyScreen> {
             ),
             const SizedBox(height: 8),
             const Text(
-              'Use your location once to choose a broad region and estimate extra food, power, travel, lodging, and home-protection costs. You will receive at most one simulated alert per day.',
+              'Use your location once to choose a broad region and estimate extra food, power, travel, lodging, and home-protection costs. Alerts follow the configured notification schedule.',
               style: TextStyle(color: AppTheme.textSecondary, height: 1.35),
             ),
             const SizedBox(height: 8),
@@ -322,7 +322,8 @@ class _EmergencyScreenState extends State<EmergencyScreen> {
                 child: ElevatedButton.icon(
                   onPressed: enableHurricaneSimulation,
                   icon: const Icon(Icons.location_on_outlined),
-                  label: const Text('Use location and enable daily simulation'),
+                  label:
+                      const Text('Use location and enable simulation alerts'),
                 ),
               ),
             ] else ...[
@@ -358,7 +359,7 @@ class _EmergencyScreenState extends State<EmergencyScreen> {
                 alignment: Alignment.centerRight,
                 child: TextButton(
                   onPressed: disableHurricaneSimulation,
-                  child: const Text('Disable daily simulation'),
+                  child: const Text('Disable simulation alerts'),
                 ),
               ),
             ],
