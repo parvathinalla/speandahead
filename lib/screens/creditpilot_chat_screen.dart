@@ -278,7 +278,7 @@ class _CreditPilotChatScreenState extends State<CreditPilotChatScreen> {
               ),
             ]),
         )),
-      )),
+      ),
     );
   }
 
