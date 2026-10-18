@@ -138,6 +138,7 @@ def create_router(db, actor, gateway, enabled):
     def set_limit(body: Limit, user=Depends(actor)):
         connection = connect()
         try:
+            connection.execute("BEGIN IMMEDIATE")
             member = membership(connection, user)
             if member["role"] != "primary":
                 raise HTTPException(403, "Only the primary holder can set the approval limit")
@@ -164,6 +165,7 @@ def create_router(db, actor, gateway, enabled):
         connection = connect()
         try:
             # Membership and limit may have changed during the external review.
+            connection.execute("BEGIN IMMEDIATE")
             member = membership(connection, user)
             if recipient not in member["recipients"]:
                 raise HTTPException(409, "Recipient changed; review your payment again")
@@ -271,9 +273,10 @@ def create_router(db, actor, gateway, enabled):
             # Serialize local reservations against the freshly observed balance.
             if account.get("_id") != member["account_id"]:
                 raise HTTPException(502, "Nessie account mismatch")
-            reserved = connection.execute("""SELECT COALESCE(SUM(amount_cents),0) FROM joint_payments
+            reservation = connection.execute("""SELECT COALESCE(SUM(amount_cents),0) AS reserved FROM joint_payments
                 WHERE account_id=? AND status IN ('processing','submitted','unknown')""",
-                (member["account_id"],)).fetchone()[0]
+                (member["account_id"],)).fetchone()
+            reserved = reservation["reserved"]
             if row["amount_cents"] + reserved > cents(account.get("balance", 0)):
                 raise HTTPException(409, "Insufficient available funds after pending sandbox payments")
             connection.execute("UPDATE joint_payments SET status='processing' WHERE id=?", (payment_id,))

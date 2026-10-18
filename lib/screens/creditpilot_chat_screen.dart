@@ -72,6 +72,8 @@ class _CreditPilotChatScreenState extends State<CreditPilotChatScreen> {
   Future<void> _send([String? suggested]) async {
     final question = (suggested ?? _input.text).trim();
     if (_busy || question.length < 2 || question.length > 1300) return;
+    final recent = _messages.skip(_messages.length > 12 ? _messages.length - 12 : 0)
+        .map((entry) => Map<String, String>.from(entry)).toList();
     _input.clear();
     setState(() {
       _error = null;
@@ -80,7 +82,7 @@ class _CreditPilotChatScreenState extends State<CreditPilotChatScreen> {
     });
     WidgetsBinding.instance.addPostFrameCallback((_) => _scrollBottom());
     try {
-      final response = await ApiService.agentChat(question);
+      final response = await ApiService.agentChat(question, history: recent);
       if (!mounted) return;
       setState(() {
         _bankSource = response['bank_data_source']

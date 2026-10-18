@@ -7,6 +7,7 @@ import 'auth_profile.dart';
 AuthClient createAuthClient() => WebAuthClient();
 
 class WebAuthClient implements AuthClient {
+  Future<String?>? _tokenRequest;
   // Keep exactly one SPA client, including across callback handling.
   static final Auth0Web _sdk = Auth0Web(
     AuthConfig.domain, AuthConfig.webClientId,
@@ -30,6 +31,8 @@ class WebAuthClient implements AuthClient {
       audience: AuthConfig.audience,
       scopes: _scopes,
       useRefreshTokens: false,
+      authorizeTimeoutInSeconds: 10,
+      httpTimeoutInSeconds: 10,
     );
     if (credentials == null) return null;
     return _profile(credentials);
@@ -50,9 +53,20 @@ class WebAuthClient implements AuthClient {
 
   @override
   Future<String?> accessToken() async {
-    final creds = await _sdk.credentials(
-      audience: AuthConfig.audience, scopes: _scopes,
-    );
+    final pending = _tokenRequest;
+    if (pending != null) return pending;
+    final request = _readToken();
+    _tokenRequest = request;
+    try {
+      return await request;
+    } finally {
+      if (identical(_tokenRequest, request)) _tokenRequest = null;
+    }
+  }
+
+  Future<String?> _readToken() async {
+    final creds = await _sdk.credentials(audience: AuthConfig.audience,
+        scopes: _scopes, timeoutInSeconds: 10);
     return creds.accessToken;
   }
 

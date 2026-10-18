@@ -65,6 +65,21 @@ def test_health(client):
     assert r.status_code == 200 and r.json()["status"] == "ok"
 
 
+def test_autopay_without_savings_does_not_require_a_savings_account(client, monkeypatch):
+    original = main.manifest
+    def checking_only(user='demo-sarah'):
+        data = original(user)
+        data['ids']['accounts'].pop('savings', None)
+        return data
+    monkeypatch.setattr(main, 'manifest', checking_only)
+    result = client.post('/api/autopay/preview', json={'account': 'card_a'})
+    assert result.status_code == 200, result.text
+    assert result.json()['savings_after_assumed_transfer'] == 0
+    assert result.json()['data_sources']['credit_limit_and_statement'] == 'local_app_simulation'
+    result = client.post('/api/autopay/preview', json={'account': 'card_a', 'assumed_savings_transfer': 1})
+    assert result.status_code == 409
+
+
 def test_dashboard_reads_seeded_nessie_accounts(client):
     response = client.get("/api/dashboard")
     assert response.status_code == 200, response.text

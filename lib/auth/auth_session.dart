@@ -21,6 +21,7 @@ class AuthSession extends ChangeNotifier {
   bool _hasJointAccount = false;
   String? _error;
   String? _configError;
+  String _loadingMessage = 'Restoring secure sign-in…';
 
   AuthProfile? get profile => _profile;
   bool get signedIn => _profile != null;
@@ -30,6 +31,7 @@ class AuthSession extends ChangeNotifier {
   bool get hasJointAccount => _hasJointAccount;
   String? get error => _error;
   String? get configurationError => _configError;
+  String get loadingMessage => _loadingMessage;
 
   Future<void> bootstrap() async {
     if (_started) return;
@@ -49,8 +51,12 @@ class AuthSession extends ChangeNotifier {
       } else {
         _client = createAuthClient();
         ApiService.tokenProvider = _client!.accessToken;
+        final watch = Stopwatch()..start();
         _profile = await _client!.restore();
+        if (!kReleaseMode) debugPrint('Auth timing: SDK restore ${watch.elapsedMilliseconds}ms');
         if (_profile != null) {
+          _loadingMessage = 'Loading your accounts…';
+          notifyListeners();
           await refreshLink();
         }
       }
@@ -67,14 +73,19 @@ class AuthSession extends ChangeNotifier {
   Future<void> refreshLink() async {
     if (_profile == null) return;
     try {
-      final me = await ApiService.me();
+      final watch = Stopwatch()..start();
+      final results = await Future.wait([
+        ApiService.me(), ApiService.jointMembership(),
+      ]);
+      final me = results[0];
       if (!AuthConfig.debugDemo && me['security_mode'] != 'auth0') {
         throw ApiException(
             'FastAPI must use AUTH_MODE=auth0 before using real user logins.');
       }
       _sandboxLinked = me['sandbox_linked'] == true;
-      final joint = await ApiService.jointMembership();
+      final joint = results[1];
       _hasJointAccount = joint['has_joint_account'] == true;
+      if (!kReleaseMode) debugPrint('Auth timing: account loading ${watch.elapsedMilliseconds}ms');
       _error = null;
     } catch (error) {
       _sandboxLinked = false;

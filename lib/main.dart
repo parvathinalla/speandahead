@@ -56,9 +56,13 @@ class _AuthGateState extends State<AuthGate> {
         final session = AuthSession.instance;
 
         if (session.initializing) {
-          return const Scaffold(
+          return Scaffold(
             body: Center(
-              child: CircularProgressIndicator(),
+              child: Column(mainAxisSize: MainAxisSize.min, children: [
+                const CircularProgressIndicator(),
+                const SizedBox(height: 16),
+                Text(session.loadingMessage),
+              ]),
             ),
           );
         }

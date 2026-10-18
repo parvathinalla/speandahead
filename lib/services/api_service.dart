@@ -265,8 +265,9 @@ class ApiService {
 
   /// Personalized agent. The backend independently loads the signed-in
   /// user's financial sandbox; clients cannot submit arbitrary balances.
-  static Future<Map<String, dynamic>> agentChat(String message) =>
-      _request('POST', '/api/agent/chat', {'message': message});
+  static Future<Map<String, dynamic>> agentChat(String message,
+          {List<Map<String, String>> history = const []}) =>
+      _request('POST', '/api/agent/chat', {'message': message, 'history': history});
 
   static Future<Map<String, dynamic>> agentSettings() =>
       _request('GET', '/api/agent/settings');

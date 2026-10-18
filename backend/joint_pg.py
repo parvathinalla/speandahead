@@ -71,6 +71,7 @@ class JointPostgres:
         self.store = TigerDataStore(dsn)
 
     def initialize(self) -> None:
+        NessieLinkStore(self.store.url).initialize()
         ddl = _SCHEMA.read_text(encoding="utf-8")
         ddl = "\n".join(
             line for line in ddl.splitlines()

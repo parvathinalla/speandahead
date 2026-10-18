@@ -84,6 +84,19 @@ class AgentMemory:
             row = self._run(conn, "SELECT enabled FROM cp_ai_settings WHERE owner_sub=?", (user,)).fetchone()
             return bool(row[0]) if row else False
 
+    def context(self, user: str):
+        """Load consent and opted-in context with a single database connection."""
+        with self._connect() as conn:
+            row = self._run(conn, "SELECT enabled FROM cp_ai_settings WHERE owner_sub=?", (user,)).fetchone()
+            if not row or not row[0]:
+                return False, [], []
+            messages = self._run(conn,
+                "SELECT role,content FROM cp_ai_messages WHERE owner_sub=? ORDER BY id DESC LIMIT 12", (user,)).fetchall()
+            notes = self._run(conn,
+                "SELECT id,note FROM cp_ai_memories WHERE owner_sub=? ORDER BY created_at DESC LIMIT 20", (user,)).fetchall()
+            return (True, [{"role": r[0], "content": r[1]} for r in reversed(messages)],
+                    [{"id": r[0], "note": r[1]} for r in notes])
+
     def set_enabled(self, user: str, enabled: bool) -> dict:
         with self._connect() as conn:
             self._run(conn, """INSERT INTO cp_ai_settings(owner_sub,enabled,updated_at)

@@ -31,8 +31,21 @@
 
   <title>CreditPilot AI — Financial Clarity</title>
   <link rel="manifest" href="manifest.json">
+  <link rel="preconnect" href="https://cdn.auth0.com" crossorigin>
+  <style>
+    #startup { position: fixed; inset: 0; display: grid; place-content: center;
+      background: #f4f8fe; color: #0b3159; text-align: center;
+      font: 16px system-ui, sans-serif; }
+    #startup strong { font-size: 24px; margin-bottom: 12px; }
+  </style>
 </head>
 <body>
+  <div id="startup" role="status"><strong>CreditPilot AI</strong><span>Opening your secure workspace…</span></div>
+  <script>
+    window.addEventListener('flutter-first-frame', function () {
+      document.getElementById('startup')?.remove();
+    }, { once: true });
+  </script>
   <!--
     You can customize the "flutter_bootstrap.js" script.
     This is useful to provide a custom configuration to the Flutter loader
