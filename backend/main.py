@@ -24,7 +24,7 @@ from pydantic import BaseModel, Field
 import jwt
 
 from finance_engine import (
-    amount, autopay_preview, card_comparison, emergency, forecast, joint_risk, money
+    amount, autopay_preview, card_comparison, emergency, forecast, joint_risk, money, next_payment_date
 )
 import synthetic_bank as demo_bank
 
@@ -417,7 +417,14 @@ async def get_accounts(request: Request, user=Depends(actor)):
 @app.get("/api/bills")
 def get_bills(user=Depends(actor)):
     m = manifest(user)
-    return {"bills": bills(m), "source": m.get("source", "local_app_simulation")}
+    upcoming = []
+    for bill in bills(m):
+        item = dict(bill)
+        if item.get("frequency") == "monthly":
+            item["payment_date"] = next_payment_date(item).isoformat()
+            item["upcoming_payment_date"] = item["payment_date"]
+        upcoming.append(item)
+    return {"bills": upcoming, "source": m.get("source", "local_app_simulation")}
 
 
 def require_synthetic():
