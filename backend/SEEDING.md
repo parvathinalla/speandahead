@@ -138,3 +138,15 @@ transactions or future bills, and does not automatically link the new customers
 to Auth0 or make them visible in the existing app demo. The current Nessie
 app still uses its existing per-user `seed_manifest.json` mappings.
 No real transactions, payments, or transfers are created.
+
+## Existing username/password login → Nessie via TigerData
+
+For this login-only prototype, an administrator first creates a user in the **Auth0 Database connection**. In Auth0 Authentication > Database, enable username login (requires username), disable public signups, and enable that connection on the CreditPilot application. The user types **username and password on hosted Auth0 Universal Login**. Auth0 verifies them and returns a signed token containing the same unique `sub` user ID every login. CreditPilot never handles passwords.
+
+In `backend/.env`, set `AUTH_MODE=auth0`, `DEMO_DATA_MODE=nessie`, `DEMO_STORE=sqlite`, `TIGERDATA_DATABASE_URL`, `NESSIE_API_KEY`, `AUTH0_DOMAIN`, and `AUTH0_AUDIENCE`. Once `seed_nessie_bulk.py --apply` is done, from project root run:
+
+```powershell
+python backend\scripts\link_nessie_user.py --subject "auth0|YOUR_USER_ID" --slot 0
+```
+
+This binds the Auth0 subject hash to a specific **pre-provisioned** Nessie customer and their account IDs in TigerData. Backend `/api/me` looks up the verified `sub`, and `/api/dashboard` fetches the matching account balances from Nessie. Do this once per authorized demo user; user IDs are provided by Auth0, not typed into the app or trusted from the browser. The 500 Nessie customers do **not** automatically constitute 500 Auth0 login identities.
