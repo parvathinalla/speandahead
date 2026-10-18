@@ -8,6 +8,7 @@ class AccountOnboardingScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     final session = AuthSession.instance;
     final who = session.profile;
+    final connectionFailed = session.error != null;
     return Scaffold(
       appBar: AppBar(
         title: const Text('CreditPilot AI'),
@@ -44,12 +45,16 @@ class AccountOnboardingScreen extends StatelessWidget {
                 const Text('Your account is authenticated.',
                     style: TextStyle(color: AppTheme.textSecondary)),
                 const SizedBox(height: 20),
-                const Text('No banking sandbox is linked yet.',
+                Text(connectionFailed
+                    ? 'We could not check your banking connection.'
+                    : 'No banking sandbox is linked yet.',
                     style:
                         TextStyle(fontSize: 17, fontWeight: FontWeight.w800)),
                 const SizedBox(height: 8),
-                const Text(
-                    'For security, we never expose another user’s demo bank balances '
+                Text(connectionFailed
+                    ? 'Your sign-in succeeded. Account details are temporarily '
+                      'unavailable. Retry the connection to load your existing accounts.'
+                    : 'For security, we never expose another user’s demo bank balances '
                     'automatically after login. An operator must provision an '
                     'individual fictional Nessie sandbox for your account.',
                     textAlign: TextAlign.center,

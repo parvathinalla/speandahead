@@ -61,7 +61,13 @@ class ApiService {
             'Release builds require HTTPS for protected API calls.');
       }
       final uri = Uri.parse('$baseUrl$path');
-      final accessToken = await tokenProvider?.call();
+      String? accessToken;
+      try {
+        accessToken = await tokenProvider?.call();
+      } on TimeoutException {
+        throw ApiException('Secure session verification timed out. '
+            'Retry, or sign out and sign in again.');
+      }
       final headers = <String, String>{
         'Content-Type': 'application/json',
         if (accessToken != null && accessToken.isNotEmpty)
@@ -94,8 +100,8 @@ class ApiService {
     } on ApiException {
       rethrow; // Preserve backend HTTP status such as 503.
     } on TimeoutException {
-      throw ApiException('Backend took too long at $baseUrl. '
-          'Nessie may be temporarily slow. Tap Retry.');
+      throw ApiException('Account request $path timed out at $baseUrl. '
+          'Your existing account links have not been changed. Tap Retry.');
     } on http.ClientException {
       throw ApiException('Browser could not reach $baseUrl. '
           'Open $baseUrl/health in Chrome. If /health works, '

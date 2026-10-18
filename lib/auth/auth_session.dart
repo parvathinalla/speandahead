@@ -17,6 +17,7 @@ class AuthSession extends ChangeNotifier {
   bool _started = false;
   bool _initializing = true;
   bool _busy = false;
+  bool _checkingLink = false;
   bool _sandboxLinked = false;
   bool _hasJointAccount = false;
   String? _error;
@@ -26,7 +27,7 @@ class AuthSession extends ChangeNotifier {
   AuthProfile? get profile => _profile;
   bool get signedIn => _profile != null;
   bool get initializing => _initializing;
-  bool get busy => _busy;
+  bool get busy => _busy || _checkingLink;
   bool get sandboxLinked => _sandboxLinked;
   bool get hasJointAccount => _hasJointAccount;
   String? get error => _error;
@@ -71,7 +72,9 @@ class AuthSession extends ChangeNotifier {
   }
 
   Future<void> refreshLink() async {
-    if (_profile == null) return;
+    if (_profile == null || _checkingLink) return;
+    _checkingLink = true;
+    notifyListeners();
     try {
       final watch = Stopwatch()..start();
       final results = await Future.wait([
@@ -91,6 +94,8 @@ class AuthSession extends ChangeNotifier {
       _sandboxLinked = false;
       _hasJointAccount = false;
       _error = error.toString();
+    } finally {
+      _checkingLink = false;
     }
     notifyListeners();
   }
