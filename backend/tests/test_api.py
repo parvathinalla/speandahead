@@ -188,6 +188,57 @@ def test_emergency_gap(client):
     assert response.json()["potential_gap"] == 250
 
 
+def test_hurricane_simulation_uses_region_and_budget_then_deduplicates_push(client):
+    response = client.post("/api/emergency/hurricane/subscribe", json={
+        "latitude": 29.65,
+        "longitude": -82.32,
+        "safety_buffer": 300,
+    })
+    assert response.status_code == 200, response.text
+    data = response.json()
+    assert data["scenario"] == "hurricane_budget_simulation"
+    assert data["region"] == "Florida"
+    assert data["estimated_emergency_cost"] == 850
+    assert data["protected_committed_bills"] == 650
+    assert data["usable_cash_buffer"] == 750
+    assert data["potential_gap"] == 100
+    assert "latitude" not in data and "longitude" not in data
+    saved = client.get("/api/emergency/hurricane")
+    assert saved.status_code == 200
+    assert saved.json()["alert_subscribed"] is True
+    assert saved.json()["region"] == "Florida"
+
+    connection = main.db()
+    try:
+        connection.execute(
+            "INSERT INTO push_devices(token,owner,platform) VALUES (?,?,?)",
+            ("test-device-token-1234567890", "demo-sarah", "android"),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+    sent = []
+
+    def sender(tokens, title, body):
+        sent.append((tokens, title, body))
+        return {"success_count": 1, "invalid_tokens": []}
+
+    import asyncio
+    first = asyncio.run(main.run_hurricane_push_cycle(main.app.state.nessie, sender))
+    second = asyncio.run(main.run_hurricane_push_cycle(main.app.state.nessie, sender))
+    assert first == {"users_notified": 1}
+    assert second == {"users_notified": 0}
+    assert sent[0][1] == "Hurricane budget simulation"
+    assert "$100.00 short" in sent[0][2]
+
+    disabled = client.post("/api/emergency/hurricane/unsubscribe")
+    assert disabled.status_code == 200
+    assert client.get("/api/emergency/hurricane").json() == {
+        "alert_subscribed": False
+    }
+
+
 def test_legacy_joint_partner_routes_are_unavailable(client):
     assert client.post('/api/joint/proposals', json={'confirmed': True}).status_code == 404
 

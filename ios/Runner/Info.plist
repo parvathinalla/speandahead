@@ -42,7 +42,7 @@
 		<string>remote-notification</string>
 	</array>
 	<key>NSLocationWhenInUseUsageDescription</key>
-	<string>CreditPilot uses your location to identify nearby merchants and recommend the most suitable card. Your location is not stored.</string>
+	<string>CreditPilot uses your location to identify nearby merchants and choose a broad region for optional emergency budget simulations. Precise location is not stored.</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

@@ -34,7 +34,7 @@ from tigerdata_store import TigerDataStore
 from nessie_links import NessieLinkStore
 from agent_memory import AgentMemory
 from agent_service import ask_gemini, extract_trip_plan, snapshot as agent_snapshot
-from push_notifications import send_cashflow_warning
+from push_notifications import send_cashflow_warning, send_hurricane_warning
 from location_service import nearby_merchants
 
 ROOT = Path(__file__).resolve().parent
@@ -52,6 +52,9 @@ GOOGLE_PLACES_API_KEY = os.getenv("GOOGLE_PLACES_API_KEY", "").strip()
 ORIGINS = [o.strip() for o in os.getenv("CORS_ORIGINS", "http://localhost:3000,http://localhost:8080,http://127.0.0.1:8080").split(",") if o.strip()]
 PUSH_ENABLED = os.getenv("PUSH_NOTIFICATIONS_ENABLED", "false").strip().lower() == "true"
 PUSH_DAILY_HOUR = int(os.getenv("PUSH_DAILY_HOUR_LOCAL", "9"))
+HURRICANE_SIMULATION_ENABLED = (
+    os.getenv("HURRICANE_SIMULATION_ENABLED", "false").strip().lower() == "true"
+)
 
 if AUTH_MODE not in ("demo", "auth0"):
     raise RuntimeError("AUTH_MODE must be demo or auth0")
@@ -135,6 +138,11 @@ def db():
         updated_at TEXT DEFAULT CURRENT_TIMESTAMP
     )""")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_push_devices_owner ON push_devices(owner)")
+    conn.execute("""CREATE TABLE IF NOT EXISTS hurricane_subscriptions (
+        owner TEXT PRIMARY KEY, region TEXT NOT NULL, safety_buffer REAL NOT NULL,
+        enabled INTEGER NOT NULL DEFAULT 1,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+    )""")
     conn.commit()
     return conn
 
@@ -502,6 +510,67 @@ def _cashflow_push_text(forecast_result: dict) -> str:
     return f"Heads up—{bill} may leave you ${shortfall:.2f} short on {due}......"
 
 
+HURRICANE_EXPENSES = {
+    "Food and water": 180.0,
+    "Backup power and communications": 120.0,
+    "Evacuation transportation": 250.0,
+    "Temporary lodging and home protection": 300.0,
+}
+
+
+def _hurricane_region(latitude: float, longitude: float) -> str:
+    """Convert coordinates to a broad demo region; precise location is not stored."""
+    if 24.3 <= latitude <= 31.2 and -87.8 <= longitude <= -79.7:
+        return "Florida"
+    if 25.5 <= latitude <= 31.5 and -97.8 <= longitude < -87.8:
+        return "Gulf Coast"
+    if 25.0 <= latitude <= 36.7 and -81.5 <= longitude <= -75.0:
+        return "Atlantic Coast"
+    return "your area"
+
+
+async def hurricane_assessment(owner: str, region: str, safety_buffer: float,
+                               gateway_instance=None) -> dict:
+    profile = manifest(owner)
+    gateway_instance = gateway_instance or getattr(app.state, "nessie", None) or NessieGateway()
+    account_values = await accounts(gateway_instance, profile)
+    upcoming = forecast_from(account_values, profile, days=14)
+    simulated_cost = sum(HURRICANE_EXPENSES.values())
+    result = emergency(
+        account_amount(account_values["checking"]),
+        account_amount(account_values["savings"]),
+        upcoming["total_bills_due"], simulated_cost, safety_buffer,
+    )
+    gap = float(result["potential_gap"])
+    usable = float(result["usable_cash_buffer"])
+    result.update({
+        "scenario": "hurricane_budget_simulation",
+        "region": region,
+        "horizon_days": 14,
+        "additional_expenses": HURRICANE_EXPENSES,
+        "covered_amount": round(min(usable, simulated_cost), 2),
+        "remaining_cushion": round(max(0.0, usable - simulated_cost), 2),
+        "status_message": (
+            f"You may be ${gap:.2f} short after upcoming bills and your safety reserve."
+            if gap > 0 else
+            f"You can cover the simulated costs with ${usable - simulated_cost:.2f} left."
+        ),
+        "simulation_notice": (
+            "Planning simulation only. This is not an official weather forecast, "
+            "evacuation order, or emergency alert."
+        ),
+    })
+    return result
+
+
+def _hurricane_push_text(result: dict) -> str:
+    gap = float(result.get("potential_gap") or 0)
+    if gap > 0:
+        return f"Storm costs could leave you ${gap:.2f} short - see your plan......"
+    cushion = float(result.get("remaining_cushion") or 0)
+    return f"Your plan covers storm costs with ${cushion:.2f} left......"
+
+
 async def run_daily_push_cycle(gateway_instance=None, sender=send_cashflow_warning):
     """Send each registered user at most one warning for today's forecast."""
     connection = db()
@@ -573,6 +642,78 @@ async def run_daily_push_cycle(gateway_instance=None, sender=send_cashflow_warni
     return {"users_notified": delivered}
 
 
+async def run_hurricane_push_cycle(gateway_instance=None,
+                                   sender=send_hurricane_warning):
+    """Send one daily opt-in hurricane budget simulation per subscribed user."""
+    connection = db()
+    try:
+        subscriptions = connection.execute(
+            "SELECT owner,region,safety_buffer FROM hurricane_subscriptions "
+            "WHERE enabled=1"
+        ).fetchall()
+    finally:
+        connection.close()
+
+    delivered = 0
+    today = date.today().isoformat()
+    for subscription in subscriptions:
+        owner = subscription["owner"]
+        reminder_id = hashlib.sha256(
+            (owner + "|hurricane-simulation|" + today).encode("utf-8")
+        ).hexdigest()
+        try:
+            result = await hurricane_assessment(
+                owner, subscription["region"], subscription["safety_buffer"],
+                gateway_instance,
+            )
+            connection = db()
+            try:
+                claimed = connection.execute(
+                    "INSERT OR IGNORE INTO actions(id,owner,action_type,status,payload) "
+                    "VALUES (?,?,?,?,?)",
+                    (reminder_id, owner, "hurricane_simulation_push", "sending",
+                     json.dumps({"date": today, "region": result["region"],
+                                 "potential_gap": result["potential_gap"]})),
+                ).rowcount == 1
+                tokens = [row["token"] for row in connection.execute(
+                    "SELECT token FROM push_devices WHERE owner=?", (owner,)
+                ).fetchall()]
+                connection.commit()
+            finally:
+                connection.close()
+            if not claimed or not tokens:
+                continue
+
+            send_result = await asyncio.to_thread(
+                sender, tokens, "Hurricane budget simulation",
+                _hurricane_push_text(result),
+            )
+            connection = db()
+            try:
+                for token in send_result.get("invalid_tokens", []):
+                    connection.execute("DELETE FROM push_devices WHERE token=?", (token,))
+                if send_result.get("success_count", 0) > 0:
+                    connection.execute(
+                        "UPDATE actions SET status='delivered' WHERE id=?", (reminder_id,)
+                    )
+                    delivered += 1
+                else:
+                    connection.execute("DELETE FROM actions WHERE id=?", (reminder_id,))
+                connection.commit()
+            finally:
+                connection.close()
+        except Exception:
+            connection = db()
+            try:
+                connection.execute(
+                    "DELETE FROM actions WHERE id=? AND status='sending'", (reminder_id,)
+                )
+                connection.commit()
+            finally:
+                connection.close()
+    return {"users_notified": delivered}
+
+
 async def push_notification_loop():
     """Run the server-side daily check; disabled unless explicitly configured."""
     last_attempt = None
@@ -582,6 +723,8 @@ async def push_notification_loop():
         if now.hour >= PUSH_DAILY_HOUR and last_attempt != today:
             last_attempt = today
             await run_daily_push_cycle()
+            if HURRICANE_SIMULATION_ENABLED:
+                await run_hurricane_push_cycle()
         await asyncio.sleep(60 * 15)
 
 
@@ -1216,6 +1359,12 @@ class EmergencyRequest(BaseModel):
     horizon_days: int = Field(14, ge=1, le=90)
 
 
+class HurricaneSubscriptionRequest(BaseModel):
+    latitude: float = Field(ge=-90, le=90)
+    longitude: float = Field(ge=-180, le=180)
+    safety_buffer: float = Field(300, ge=0, le=100000)
+
+
 @app.post("/api/emergency/evaluate")
 async def evaluate_emergency(body: EmergencyRequest, request: Request, user=Depends(actor)):
     m = manifest(user)
@@ -1225,6 +1374,66 @@ async def evaluate_emergency(body: EmergencyRequest, request: Request, user=Depe
                        f["total_bills_due"], body.emergency_cost, body.safety_buffer)
     result["data_sources"] = f["data_sources"]
     return result
+
+
+@app.post("/api/emergency/hurricane/subscribe")
+async def subscribe_hurricane_simulation(body: HurricaneSubscriptionRequest,
+                                         request: Request,
+                                         user=Depends(actor)):
+    region = _hurricane_region(body.latitude, body.longitude)
+    connection = db()
+    try:
+        connection.execute(
+            "INSERT INTO hurricane_subscriptions(owner,region,safety_buffer,enabled,updated_at) "
+            "VALUES (?,?,?,1,CURRENT_TIMESTAMP) ON CONFLICT(owner) DO UPDATE SET "
+            "region=excluded.region,safety_buffer=excluded.safety_buffer,enabled=1,"
+            "updated_at=CURRENT_TIMESTAMP",
+            (user, region, body.safety_buffer),
+        )
+        connection.commit()
+    finally:
+        connection.close()
+    result = await hurricane_assessment(
+        user, region, body.safety_buffer, gateway(request)
+    )
+    result["alert_subscribed"] = True
+    result["location_storage"] = "Broad region only; precise coordinates were discarded."
+    return result
+
+
+@app.get("/api/emergency/hurricane")
+async def get_hurricane_simulation(request: Request, user=Depends(actor)):
+    connection = db()
+    try:
+        subscription = connection.execute(
+            "SELECT region,safety_buffer FROM hurricane_subscriptions "
+            "WHERE owner=? AND enabled=1", (user,)
+        ).fetchone()
+    finally:
+        connection.close()
+    if not subscription:
+        return {"alert_subscribed": False}
+    result = await hurricane_assessment(
+        user, subscription["region"], subscription["safety_buffer"],
+        gateway(request),
+    )
+    result["alert_subscribed"] = True
+    result["location_storage"] = "Broad region only; precise coordinates were discarded."
+    return result
+
+
+@app.post("/api/emergency/hurricane/unsubscribe")
+def unsubscribe_hurricane_simulation(user=Depends(actor)):
+    connection = db()
+    try:
+        changed = connection.execute(
+            "UPDATE hurricane_subscriptions SET enabled=0,updated_at=CURRENT_TIMESTAMP "
+            "WHERE owner=?", (user,)
+        ).rowcount
+        connection.commit()
+    finally:
+        connection.close()
+    return {"alert_subscribed": False, "changed": changed == 1}
 
 
 # Legacy partner routes are intentionally removed: only verified membership and

@@ -242,6 +242,23 @@ class ApiService {
     'horizon_days': days,
   });
 
+  static Future<Map<String, dynamic>> subscribeHurricaneSimulation({
+    required double latitude,
+    required double longitude,
+    required double safetyBuffer,
+  }) =>
+      _request('POST', '/api/emergency/hurricane/subscribe', {
+        'latitude': latitude,
+        'longitude': longitude,
+        'safety_buffer': safetyBuffer,
+      });
+
+  static Future<Map<String, dynamic>> getHurricaneSimulation() =>
+      _request('GET', '/api/emergency/hurricane');
+
+  static Future<Map<String, dynamic>> unsubscribeHurricaneSimulation() =>
+      _request('POST', '/api/emergency/hurricane/unsubscribe');
+
   static Future<Map<String, dynamic>> getAutoPayPreview({
     double targetPct = 29,
     String account = 'card_a',

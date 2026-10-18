@@ -15,11 +15,14 @@ class PushNotificationService {
 
   final _cashflowOpens = StreamController<void>.broadcast();
   Stream<void> get cashflowOpens => _cashflowOpens.stream;
+  final _emergencyOpens = StreamController<void>.broadcast();
+  Stream<void> get emergencyOpens => _emergencyOpens.stream;
 
   FirebaseMessaging? _messaging;
   StreamSubscription<String>? _tokenSubscription;
   String? _registeredToken;
   bool _pendingCashflowOpen = false;
+  bool _pendingEmergencyOpen = false;
 
   bool get _supported =>
       !kIsWeb &&
@@ -94,17 +97,33 @@ class PushNotificationService {
   }
 
   void _handleOpen(RemoteMessage message) {
-    if (message.data['screen'] != 'cashflow') return;
-    if (_cashflowOpens.hasListener) {
-      _cashflowOpens.add(null);
-    } else {
-      _pendingCashflowOpen = true;
+    switch (message.data['screen']) {
+      case 'cashflow':
+        if (_cashflowOpens.hasListener) {
+          _cashflowOpens.add(null);
+        } else {
+          _pendingCashflowOpen = true;
+        }
+        return;
+      case 'emergency':
+        if (_emergencyOpens.hasListener) {
+          _emergencyOpens.add(null);
+        } else {
+          _pendingEmergencyOpen = true;
+        }
+        return;
     }
   }
 
   bool takePendingCashflowOpen() {
     final pending = _pendingCashflowOpen;
     _pendingCashflowOpen = false;
+    return pending;
+  }
+
+  bool takePendingEmergencyOpen() {
+    final pending = _pendingEmergencyOpen;
+    _pendingEmergencyOpen = false;
     return pending;
   }
 }

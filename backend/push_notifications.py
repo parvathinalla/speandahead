@@ -20,7 +20,10 @@ def _firebase_app():
         return firebase_admin.initialize_app(options=options)
 
 
-def send_cashflow_warning(tokens: list[str], title: str, body: str) -> dict:
+def send_device_notification(
+    tokens: list[str], title: str, body: str, *, screen: str,
+    notification_type: str, channel_id: str,
+) -> dict:
     """Send one visible notification to each device and report bad tokens."""
     if not tokens:
         return {"success_count": 0, "invalid_tokens": []}
@@ -31,11 +34,11 @@ def send_cashflow_warning(tokens: list[str], title: str, body: str) -> dict:
         messaging.Message(
             token=token,
             notification=messaging.Notification(title=title, body=body),
-            data={"screen": "cashflow", "type": "cashflow_shortfall"},
+            data={"screen": screen, "type": notification_type},
             android=messaging.AndroidConfig(
                 priority="high",
                 notification=messaging.AndroidNotification(
-                    channel_id="cashflow_alerts",
+                    channel_id=channel_id,
                 ),
             ),
             apns=messaging.APNSConfig(
@@ -58,3 +61,18 @@ def send_cashflow_warning(tokens: list[str], title: str, body: str) -> dict:
         "success_count": response.success_count,
         "invalid_tokens": invalid_tokens,
     }
+
+
+def send_cashflow_warning(tokens: list[str], title: str, body: str) -> dict:
+    return send_device_notification(
+        tokens, title, body, screen="cashflow",
+        notification_type="cashflow_shortfall", channel_id="cashflow_alerts",
+    )
+
+
+def send_hurricane_warning(tokens: list[str], title: str, body: str) -> dict:
+    return send_device_notification(
+        tokens, title, body, screen="emergency",
+        notification_type="hurricane_budget_simulation",
+        channel_id="emergency_alerts",
+    )

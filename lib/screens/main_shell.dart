@@ -24,6 +24,7 @@ class MainShell extends StatefulWidget {
 class _MainShellState extends State<MainShell> {
   Timer? _jointTimer;
   StreamSubscription<void>? _pushOpenSubscription;
+  StreamSubscription<void>? _emergencyPushOpenSubscription;
   bool _hasJoint = AuthSession.instance.hasJointAccount;
   bool _checkingJoint = false;
   int _notificationCount = 0;
@@ -42,6 +43,9 @@ class _MainShellState extends State<MainShell> {
     );
     _pushOpenSubscription = PushNotificationService.instance.cashflowOpens
         .listen((_) => _openCashflowFromPush());
+    _emergencyPushOpenSubscription = PushNotificationService
+        .instance.emergencyOpens
+        .listen((_) => _openEmergencyFromPush());
     if (PushNotificationService.instance.takePendingCashflowOpen()) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted) _openCashflowFromPush();
@@ -49,12 +53,18 @@ class _MainShellState extends State<MainShell> {
     }
     // Ask once after sign-in so Cards can immediately rank nearby merchants.
     unawaited(LocationService.instance.initialize());
+    if (PushNotificationService.instance.takePendingEmergencyOpen()) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _openEmergencyFromPush();
+      });
+    }
   }
 
   @override
   void dispose() {
     _jointTimer?.cancel();
     _pushOpenSubscription?.cancel();
+    _emergencyPushOpenSubscription?.cancel();
     super.dispose();
   }
 
@@ -63,6 +73,14 @@ class _MainShellState extends State<MainShell> {
     setState(() {
       _currentIndex = 0;
       _visited.add(0);
+    });
+  }
+
+  void _openEmergencyFromPush() {
+    if (!mounted) return;
+    setState(() {
+      _currentIndex = 4;
+      _visited.add(4);
     });
   }
 

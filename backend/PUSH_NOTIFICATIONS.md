@@ -2,6 +2,14 @@
 
 CreditPilot uses Firebase Cloud Messaging (FCM) for the daily seven-day cashflow warning. The backend checks each registered user's upcoming bills after the configured local hour. It sends nothing when checking funds cover the forecast. It records a delivery before another cycle can notify that user again on the same day.
 
+The Emergency screen also offers an opt-in hurricane budget simulation. The
+phone supplies its location once, the backend immediately reduces it to a broad
+region, and precise coordinates are discarded. The simulation compares a
+fixed, visible $850 expense basket with checking, savings, upcoming bills, and
+the user's safety reserve. It is a planning exercise, not an official forecast,
+warning, or evacuation order. When enabled, the backend sends at most one
+simulation notification per user per day.
+
 The repository is connected to Firebase project `creditpilot-ai-rohith-2026`.
 Its registered apps use Android package `com.example.creditpilot_mobile` and
 iOS bundle ID `com.example.creditpilotMobile`.
@@ -23,6 +31,7 @@ The phone asks for notification permission after a successful Auth0 login. Tappi
    FIREBASE_PROJECT_ID=your-project-id
    PUSH_NOTIFICATIONS_ENABLED=true
    PUSH_DAILY_HOUR_LOCAL=9
+   HURRICANE_SIMULATION_ENABLED=true
    ```
 
 4. For iOS, upload an APNs authentication key in Firebase Cloud Messaging settings and enable the Push Notifications capability for the Apple App ID and provisioning profile. The Xcode project already includes the remote-notification background mode and APS entitlement.
@@ -31,6 +40,12 @@ Run the API continuously to use its built-in 15-minute scheduler. A hosting plat
 
 ```powershell
 python backend/scripts/send_daily_push_notifications.py
+```
+
+To run the opt-in hurricane simulation immediately during a demo:
+
+```powershell
+python backend/scripts/send_hurricane_simulation.py
 ```
 
 The job still deduplicates per user and date. Chrome intentionally does not register for these mobile notifications.

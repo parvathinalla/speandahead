@@ -19,6 +19,15 @@ class MainActivity : FlutterActivity() {
             }
             getSystemService(NotificationManager::class.java)
                 .createNotificationChannel(channel)
+            val emergencyChannel = NotificationChannel(
+                "emergency_alerts",
+                "Emergency simulations",
+                NotificationManager.IMPORTANCE_DEFAULT,
+            ).apply {
+                description = "Opt-in simulated emergency budget alerts"
+            }
+            getSystemService(NotificationManager::class.java)
+                .createNotificationChannel(emergencyChannel)
         }
     }
 }
