@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import '../theme/app_theme.dart';
 import '../services/api_service.dart';
 
+/// Cashflow dashboard: authenticated balances + owner-editable demo bills.
 class BillsScreen extends StatefulWidget {
   const BillsScreen({super.key});
   @override
@@ -9,9 +10,11 @@ class BillsScreen extends StatefulWidget {
 }
 
 class _BillsScreenState extends State<BillsScreen> {
-  Map<String, dynamic>? data;
+  Map<String, dynamic>? forecast;
+  List<Map<String, dynamic>> allBills = [];
+  List<Map<String, dynamic>> transactions = [];
+  bool synthetic = false, loading = true;
   String? error;
-  bool loading = true;
 
   @override
   void initState() {
@@ -19,142 +22,325 @@ class _BillsScreenState extends State<BillsScreen> {
     reload();
   }
 
-  String dollars(dynamic v) => '\$' + (double.tryParse(v.toString()) ?? 0).toStringAsFixed(2);
+  String dollars(dynamic value) =>
+      '\$' + (double.tryParse(value.toString()) ?? 0).toStringAsFixed(2);
 
   Future<void> reload() async {
     if (mounted) setState(() { loading = true; error = null; });
     try {
-      final response = await ApiService.getBillForecast();
-      if (mounted) setState(() { data = response; loading = false; });
-    } catch (e) {
-      if (mounted) setState(() { error = e.toString(); loading = false; });
+      final bills = await ApiService.getBills();
+      final result = await ApiService.getBillForecast();
+      final isSynthetic = bills['source'] == 'synthetic_banking_demo';
+      final entries = (bills['bills'] as List? ?? [])
+          .map((item) => Map<String, dynamic>.from(item as Map))
+          .toList();
+      entries.sort((a, b) => a['payment_date']
+          .toString().compareTo(b['payment_date'].toString()));
+      List<Map<String, dynamic>> recent = [];
+      if (isSynthetic) {
+        final tx = await ApiService.getTransactions(limit: 8);
+        recent = (tx['transactions'] as List? ?? [])
+            .map((item) => Map<String, dynamic>.from(item as Map))
+            .toList();
+      }
+      if (mounted) setState(() {
+        forecast = result; allBills = entries; transactions = recent;
+        synthetic = isSynthetic; loading = false;
+      });
+    } catch (exception) {
+      if (mounted) setState(() { error = exception.toString(); loading = false; });
+    }
+  }
+
+  Future<void> editBill([Map<String, dynamic>? existing]) async {
+    if (!synthetic) return;
+    final payee = TextEditingController(text: existing?['payee']?.toString() ?? '');
+    final cost = TextEditingController(
+      text: existing?['payment_amount']?.toString() ?? '');
+    var due = DateTime.tryParse(existing?['payment_date']?.toString() ?? '') ??
+        DateTime.now().add(const Duration(days: 7));
+    var category = existing?['category']?.toString() ?? 'other';
+    var frequency = existing?['frequency']?.toString() ?? 'monthly';
+    const categories = [
+      'housing', 'utilities', 'internet', 'phone', 'insurance',
+      'loan', 'fitness', 'streaming', 'education', 'transportation',
+      'food', 'membership', 'other',
+    ];
+    if (!categories.contains(category)) category = 'other';
+    if (!['monthly', 'one_time'].contains(frequency)) frequency = 'monthly';
+    try {
+      final save = await showDialog<bool>(
+        context: context,
+        builder: (dialogContext) => StatefulBuilder(
+          builder: (context, update) => AlertDialog(
+            title: Text(existing == null ? 'Add upcoming bill' : 'Edit bill'),
+            content: SizedBox(width: 420, child: SingleChildScrollView(
+              child: Column(mainAxisSize: MainAxisSize.min, children: [
+                TextField(controller: payee, autofocus: true,
+                  decoration: const InputDecoration(labelText: 'Payee / provider')),
+                TextField(controller: cost,
+                  keyboardType: const TextInputType.numberWithOptions(decimal: true),
+                  decoration: const InputDecoration(
+                    labelText: 'Monthly payment amount (USD)')),
+                const SizedBox(height: 12),
+                OutlinedButton.icon(
+                  onPressed: () async {
+                    final selected = await showDatePicker(
+                      context: dialogContext,
+                      initialDate: due,
+                      firstDate: DateTime.now().subtract(const Duration(days: 365)),
+                      lastDate: DateTime.now().add(const Duration(days: 730)),
+                    );
+                    if (selected != null) update(() => due = selected);
+                  },
+                  icon: const Icon(Icons.calendar_month_outlined),
+                  label: Text('Due: ' + due.toIso8601String().substring(0, 10))),
+                const SizedBox(height: 10),
+                DropdownButtonFormField<String>(
+                  value: category,
+                  decoration: const InputDecoration(labelText: 'Category'),
+                  items: categories.map((name) =>
+                      DropdownMenuItem(value: name, child: Text(name))).toList(),
+                  onChanged: (v) { if (v != null) update(() => category = v); },
+                ),
+                const SizedBox(height: 8),
+                DropdownButtonFormField<String>(
+                  value: frequency,
+                  decoration: const InputDecoration(labelText: 'Frequency'),
+                  items: const [
+                    DropdownMenuItem(value: 'monthly', child: Text('Monthly')),
+                    DropdownMenuItem(value: 'one_time', child: Text('One-time')),
+                  ],
+                  onChanged: (v) { if (v != null) update(() => frequency = v); },
+                ),
+              ]),
+            )),
+            actions: [
+              TextButton(onPressed: () => Navigator.pop(dialogContext, false),
+                  child: const Text('Cancel')),
+              FilledButton(
+                onPressed: payee.text.trim().isEmpty ? null
+                    : () => Navigator.pop(dialogContext, true),
+                child: const Text('Save bill')),
+            ],
+          ),
+        ),
+      );
+      if (save != true) return;
+      final amount = double.tryParse(cost.text.trim()) ?? 0;
+      if (payee.text.trim().length < 2 || amount <= 0) {
+        throw ApiException('Enter a valid payee and positive payment amount');
+      }
+      final iso = due.toIso8601String().substring(0, 10);
+      if (existing == null) {
+        await ApiService.createBill(
+          payee: payee.text.trim(), amount: amount, dueDate: iso,
+          category: category, frequency: frequency);
+      } else {
+        await ApiService.updateBill(
+          billId: existing['bill_id'].toString(),
+          payee: payee.text.trim(), amount: amount, dueDate: iso,
+          category: category, frequency: frequency);
+      }
+      if (!mounted) return;
+      await reload();
+    } catch (exception) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(exception.toString())));
+    } finally {
+      payee.dispose();
+      cost.dispose();
+    }
+  }
+
+  Future<void> removeBill(Map<String, dynamic> entry) async {
+    final okay = await showDialog<bool>(context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Delete demo bill?'),
+        content: Text('Remove ' + entry['payee'].toString() +
+            ' from your personal simulated schedule?'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Cancel')),
+          FilledButton(onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('Delete')),
+        ],
+      ));
+    if (okay != true) return;
+    try {
+      await ApiService.deleteBill(billId: entry['bill_id'].toString());
+      await reload();
+    } catch (exception) {
+      if (mounted) ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(exception.toString())));
     }
   }
 
   Future<void> reviewTransfer() async {
-    final transfer = double.tryParse(data?['suggested_savings_transfer'].toString() ?? '') ?? 0;
-    if (transfer <= 0) return;
+    final value = double.tryParse(
+        forecast?['suggested_savings_transfer'].toString() ?? '') ?? 0;
+    if (value <= 0) return;
     final key = 'cp-demo-' + DateTime.now().microsecondsSinceEpoch.toString();
     try {
-      final preview = await ApiService.transferPreview(amount: transfer, idempotencyKey: key);
+      final preview = await ApiService.transferPreview(
+          amount: value, idempotencyKey: key);
       if (!mounted) return;
-      final allow = preview['allowed'] == true;
-      final yes = await showDialog<bool>(
+      final approved = await showDialog<bool>(
         context: context,
         builder: (ctx) => AlertDialog(
-          title: const Text('Review Savings Transfer'),
-          content: Text('Move ' + dollars(transfer) + ' from savings to checking?\n\n'
-              'Maximum safe transfer: ' + dollars(preview['max_safe_transfer']) +
-              '\n\nThis is a sandbox simulation, not a real bank payment.'),
+          title: const Text('Confirm simulated transfer'),
+          content: Text('Transfer ' + dollars(value) +
+              ' from fictional savings to fictional checking?\n\n'
+              'Protected reserve: ' + dollars(preview['protected_savings']) +
+              '\nNo actual funds will move.'),
           actions: [
-            TextButton(onPressed: () => Navigator.pop(ctx, false), child: const Text('Cancel')),
-            if (allow)
-              ElevatedButton(onPressed: () => Navigator.pop(ctx, true),
-                  child: const Text('Confirm Simulation')),
+            TextButton(onPressed: () => Navigator.pop(ctx, false),
+                child: const Text('Cancel')),
+            if (preview['allowed'] == true)
+              FilledButton(onPressed: () => Navigator.pop(ctx, true),
+                  child: const Text('Confirm')),
           ],
         ),
       );
-      if (yes == true) {
-        final response = await ApiService.executeTransfer(
-            amount: transfer, idempotencyKey: key);
-        if (!mounted) return;
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Transfer status: ' + response['status'].toString())));
-      }
-    } catch (e) {
+      if (approved != true) return;
+      final result = await ApiService.executeTransfer(
+          amount: value, idempotencyKey: key);
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Demo transfer status: ' + result['status'].toString())));
+      await reload(); // Synthetic balances now update, unlike old mock actions.
+    } catch (exception) {
       if (mounted) ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(e.toString())));
+        SnackBar(content: Text(exception.toString())));
     }
   }
 
   @override
   Widget build(BuildContext context) {
     if (loading) return const Center(child: CircularProgressIndicator());
-    if (error != null) {
-      return Center(child: Column(mainAxisSize: MainAxisSize.min, children: [
-        const Text('Could not load live account data'),
+    if (error != null) return Center(child: Column(
+      mainAxisSize: MainAxisSize.min, children: [
+        const Text('Unable to load bank scenario'),
         Padding(padding: const EdgeInsets.all(16),
-            child: Text(error!, textAlign: TextAlign.center)),
+          child: Text(error!, textAlign: TextAlign.center)),
         TextButton(onPressed: reload, child: const Text('Retry')),
-      ]));
-    }
-
-    final d = data!;
-    final payments = (d['upcoming_bills'] as List?) ?? [];
-    final timeline = (d['timeline'] as List?) ?? [];
-    final shortfall = d['is_shortfall'] == true;
-    final suggestion = double.tryParse(d['suggested_savings_transfer'].toString()) ?? 0;
+      ],
+    ));
+    final d = forecast!;
+    final shortage = d['is_shortfall'] == true;
+    final proposal = double.tryParse(
+        d['suggested_savings_transfer'].toString()) ?? 0;
 
     return Scaffold(body: SafeArea(child: RefreshIndicator(
       onRefresh: reload,
       child: ListView(padding: const EdgeInsets.all(16), children: [
-        const Text('Bill Forecast', style: TextStyle(
-            fontSize: 22, fontWeight: FontWeight.w800, color: AppTheme.brandNavy)),
-        const SizedBox(height: 4),
-        const Text('Nessie balances • Simulated upcoming bills',
-            style: TextStyle(color: AppTheme.textSecondary, fontSize: 11)),
+        const Text('Cashflow & Bills', style: TextStyle(
+            fontSize: 22, fontWeight: FontWeight.w800,
+            color: AppTheme.brandNavy)),
+        Text(synthetic
+            ? 'Private fictional banking portfolio • interactive scenario'
+            : 'Nessie sandbox balance + local bill scenario',
+            style: const TextStyle(fontSize: 11, color: AppTheme.textSecondary)),
         const SizedBox(height: 14),
         Row(children: [
           Expanded(child: metric('Checking', dollars(d['checking_balance']))),
           const SizedBox(width: 10),
-          Expanded(child: metric('Due in 14 days', dollars(d['total_bills_due']))),
+          Expanded(child: metric('Bills due (14 days)', dollars(d['total_bills_due']))),
         ]),
         const SizedBox(height: 12),
-        Card(color: shortfall ? AppTheme.riskRedBg : const Color(0xFFE7F8EC),
+        Card(color: shortage ? AppTheme.riskRedBg : const Color(0xFFE7F8EC),
           child: Padding(padding: const EdgeInsets.all(16), child: Column(
             crossAxisAlignment: CrossAxisAlignment.start, children: [
-              Text(shortfall ? 'Potential bill shortfall' : 'Scheduled bills covered',
-                  style: const TextStyle(fontSize: 12, fontWeight: FontWeight.w700)),
-              Text(shortfall ? dollars(d['shortfall_amount']) : 'On track',
-                  style: TextStyle(fontSize: 25, fontWeight: FontWeight.w900,
-                    color: shortfall ? AppTheme.riskRed : AppTheme.brandNavy)),
-              const Text('Forecast only, not a guaranteed future balance.',
-                  style: TextStyle(fontSize: 10)),
+              Text(shortage ? 'Potential bill shortfall' : 'Upcoming bills covered',
+                style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700)),
+              Text(shortage ? dollars(d['shortfall_amount']) : 'On track',
+                style: TextStyle(fontSize: 25, fontWeight: FontWeight.w900,
+                  color: shortage ? AppTheme.riskRed : AppTheme.brandNavy)),
+              const Text('Scenario estimate, not a guaranteed future balance.',
+                style: TextStyle(fontSize: 11)),
             ]))),
         const SizedBox(height: 14),
-        const Text('Upcoming Bills', style: TextStyle(fontSize: 15,
-            fontWeight: FontWeight.w800, color: AppTheme.brandNavy)),
+        Row(children: [
+          Expanded(child: Text('Upcoming bills (' + allBills.length.toString() + ')',
+            style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w800))),
+          if (synthetic) FilledButton.tonalIcon(
+            onPressed: () => editBill(),
+            icon: const Icon(Icons.add, size: 18),
+            label: const Text('Add bill')),
+        ]),
+        const SizedBox(height: 8),
         Card(child: Column(children: [
-          if (payments.isEmpty) const ListTile(title: Text('No upcoming bills')),
-          for (final item in payments)
+          if (allBills.isEmpty) const ListTile(title: Text('No bills yet')),
+          for (final item in allBills)
             ListTile(
-              leading: const Icon(Icons.receipt_long, color: AppTheme.brandBlue),
-              title: Text(item['payee'].toString()),
-              subtitle: Text(item['due_date'].toString()),
-              trailing: Text(dollars(item['amount']),
-                  style: const TextStyle(fontWeight: FontWeight.w800)),
+              leading: const Icon(Icons.receipt_long_outlined,
+                  color: AppTheme.brandBlue),
+              title: Text(item['payee'].toString(),
+                  maxLines: 1, overflow: TextOverflow.ellipsis),
+              subtitle: Text(item['payment_date'].toString() +
+                  ' • ' + (item['category']?.toString() ?? 'other')),
+              trailing: Row(mainAxisSize: MainAxisSize.min, children: [
+                Text(dollars(item['payment_amount']),
+                    style: const TextStyle(fontWeight: FontWeight.w800)),
+                if (synthetic) PopupMenuButton<String>(
+                  onSelected: (action) {
+                    if (action == 'edit') editBill(item);
+                    if (action == 'delete') removeBill(item);
+                  },
+                  itemBuilder: (ctx) => const [
+                    PopupMenuItem(value: 'edit', child: Text('Edit')),
+                    PopupMenuItem(value: 'delete', child: Text('Delete')),
+                  ],
+                ),
+              ]),
             ),
         ])),
         const SizedBox(height: 14),
-        const Text('Projected Balance', style: TextStyle(fontSize: 15,
-            fontWeight: FontWeight.w800, color: AppTheme.brandNavy)),
+        const Text('14-day balance forecast', style: TextStyle(
+            fontSize: 15, fontWeight: FontWeight.w800)),
         Card(child: Column(children: [
-          for (final day in timeline)
+          for (final day in (d['timeline'] as List? ?? []))
             ListTile(dense: true,
               title: Text(day['event'].toString()),
               subtitle: Text(day['date'].toString()),
               trailing: Text(dollars(day['balance']),
                   style: const TextStyle(fontWeight: FontWeight.w700))),
         ])),
-        const SizedBox(height: 16),
+        const SizedBox(height: 14),
         ElevatedButton(
-          onPressed: suggestion > 0 ? reviewTransfer : null,
-          child: Text('Review Savings Option: ' + dollars(suggestion)),
+          onPressed: proposal > 0 ? reviewTransfer : null,
+          child: Text('Review savings option: ' + dollars(proposal)),
         ),
-        const SizedBox(height: 6),
-        TextButton.icon(onPressed: reload, icon: const Icon(Icons.refresh),
-          label: const Text('Refresh Account Balances')),
+        if (synthetic) ...[
+          const SizedBox(height: 18),
+          const Text('Recent simulated activity', style: TextStyle(
+              fontSize: 15, fontWeight: FontWeight.w800)),
+          Card(child: Column(children: [
+            for (final txn in transactions)
+              ListTile(
+                dense: true,
+                title: Text(txn['merchant'].toString()),
+                subtitle: Text(txn['date'].toString()),
+                trailing: Text(
+                  (txn['direction'] == 'credit' ? '+' : '−') +
+                    dollars(txn['amount']),
+                  style: TextStyle(fontWeight: FontWeight.w700,
+                    color: txn['direction'] == 'credit'
+                        ? AppTheme.brandBlue : AppTheme.brandNavy)),
+              ),
+          ])),
+        ],
       ]),
     )));
   }
 
   Widget metric(String label, String value) => Card(
-    child: Padding(padding: const EdgeInsets.all(14), child: Column(
-      crossAxisAlignment: CrossAxisAlignment.start, children: [
-        Text(label, style: const TextStyle(fontSize: 11, color: AppTheme.textSecondary)),
+    child: Padding(padding: const EdgeInsets.all(14),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Text(label, style: const TextStyle(
+            fontSize: 11, color: AppTheme.textSecondary)),
         const SizedBox(height: 5),
-        Text(value, style: const TextStyle(fontSize: 22,
-            fontWeight: FontWeight.w800, color: AppTheme.brandNavy)),
-      ],
-    )));
+        Text(value, style: const TextStyle(fontSize: 21,
+          fontWeight: FontWeight.w800, color: AppTheme.brandNavy)),
+      ])));
 }
