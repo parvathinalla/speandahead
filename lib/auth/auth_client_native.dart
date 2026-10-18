@@ -28,13 +28,13 @@ class NativeAuthClient implements AuthClient {
   }
 
   @override
-  Future<AuthProfile?> login({required bool signUp}) async {
+  Future<AuthProfile?> login() async {
     final creds = await _sdk.webAuthentication(
       scheme: AuthConfig.customScheme,
     ).login(
       audience: AuthConfig.audience,
       scopes: _scopes,
-      parameters: signUp ? {'screen_hint': 'signup'} : const {},
+      parameters: const {},
     );
     return _profile(creds);
   }
