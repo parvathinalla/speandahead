@@ -28,6 +28,7 @@ from finance_engine import (
 )
 import synthetic_bank as demo_bank
 from tigerdata_store import TigerDataStore
+from nessie_links import NessieLinkStore
 from agent_memory import AgentMemory
 from agent_service import ask_gemini, snapshot as agent_snapshot
 
@@ -92,6 +93,16 @@ def using_tigerdata() -> bool:
     return DATA_MODE == "synthetic" and DEMO_STORE == "tigerdata"
 
 
+def using_nessie_links() -> bool:
+    return (AUTH_MODE == "auth0" and DATA_MODE == "nessie"
+            and bool(os.getenv("TIGERDATA_DATABASE_URL")))
+
+
+@lru_cache(maxsize=1)
+def nessie_links() -> NessieLinkStore:
+    return NessieLinkStore(os.getenv("TIGERDATA_DATABASE_URL", ""))
+
+
 @lru_cache(maxsize=1)
 def agent_memory() -> AgentMemory:
     # Independent of whether Nessie or a synthetic portfolio supplies data.
@@ -122,6 +133,8 @@ def init_db():
                 tiger_store().initialize()
             else:
                 demo_bank.initialize(connection)
+        if using_nessie_links():
+            nessie_links().initialize()
     finally:
         connection.close()
 
@@ -156,6 +169,8 @@ def manifest_path_for(user: str) -> Path:
 
 
 def has_linked_sandbox(user: str) -> bool:
+    if using_nessie_links():
+        return nessie_links().get(user) is not None
     if using_tigerdata():
         return tiger_store().get(user) is not None
     if DATA_MODE == "synthetic":
@@ -177,6 +192,16 @@ def has_linked_sandbox(user: str) -> bool:
 
 
 def manifest(user: str = "demo-sarah") -> dict:
+    if using_nessie_links():
+        linked = nessie_links().get(user)
+        if not linked:
+            raise HTTPException(409, "No Nessie account linked to this login")
+        return {
+            "owner_sub": user, "source": "nessie_sandbox",
+            "ids": {"customers": {"primary": linked["customer_id"]},
+                    "accounts": linked["accounts"]},
+            "app_bills": {}, "app_scenario": {},
+        }
     if using_tigerdata():
         try:
             return tiger_store().get_or_claim(user)
@@ -337,7 +362,7 @@ class NessieGateway:
     async def account_snapshot(self, ids: dict):
         # Cache success only; preserve fresh balances after 12 seconds and
         # invalidate immediately if this backend executes a sandbox transfer.
-        names = ("checking", "savings", "card_a", "card_b", "joint_demo", "partner_checking")
+        names = tuple(ids)
         fingerprint = tuple((name, ids[name]) for name in names)
         if self._cache_key == fingerprint and time.monotonic() < self._cache_until:
             return {name: dict(record) for name, record in self._account_cache.items()}
@@ -382,7 +407,7 @@ async def accounts(g: NessieGateway, m: dict) -> dict:
     if isinstance(g, NessieGateway):
         return await g.account_snapshot(ids)
     # Keep injected test adapters simple; they need only expose account(id).
-    names = ("checking", "savings", "card_a", "card_b", "joint_demo", "partner_checking")
+    names = tuple(ids)
     records = await asyncio.gather(*(g.account(ids[name]) for name in names))
     mapped = dict(zip(names, records))
     for name, rec in mapped.items():
@@ -419,7 +444,8 @@ def bills(m: dict):
 
 
 def forecast_from(a, m, days=14, reserve=0):
-    result = forecast(account_amount(a["checking"]), account_amount(a["savings"]),
+    result = forecast(account_amount(a["checking"]),
+                      account_amount(a["savings"]) if "savings" in a else 0,
                       bills(m), days, reserve)
     result["data_sources"] = {
         "balances": m.get("source", "nessie_sandbox"),
