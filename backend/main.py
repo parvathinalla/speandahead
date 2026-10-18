@@ -52,8 +52,8 @@ if DATA_MODE not in ("nessie", "synthetic"):
 if DEMO_STORE not in ("sqlite", "tigerdata"):
     raise RuntimeError("DEMO_STORE must be sqlite or tigerdata")
 if DEMO_STORE == "tigerdata":
-    if DATA_MODE != "synthetic" or AUTH_MODE != "auth0":
-        raise RuntimeError("TigerData backend requires authenticated synthetic profiles")
+    if AUTH_MODE != "auth0":
+        raise RuntimeError("TigerData backend requires Auth0 authentication")
     if not os.getenv("TIGERDATA_DATABASE_URL"):
         raise RuntimeError("Set TIGERDATA_DATABASE_URL as a server-side secret")
 
