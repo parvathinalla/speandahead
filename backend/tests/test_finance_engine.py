@@ -32,3 +32,33 @@ def test_emergency_shortfall():
 def test_joint_flags():
     assert joint_risk(850,2000)["requires_partner_confirmation"]
     assert not joint_risk(20,2000)["requires_partner_confirmation"]
+
+
+def test_recurring_bills_roll_forward_in_future_months():
+    from finance_engine import next_payment_date
+    start = date(2026, 10, 17)
+    bill = {
+        "payee": "Internet", "nickname": "Internet", "status": "pending",
+        "payment_date": "2026-09-30", "upcoming_payment_date": "2026-09-30",
+        "recurring_date": 30, "frequency": "monthly", "payment_amount": 70,
+        "source": "synthetic_banking_demo",
+    }
+    assert next_payment_date(bill, start) == date(2026, 10, 30)
+    x = forecast(1000, 200, [bill], horizon_days=95, today=start)
+    assert [b["due_date"] for b in x["upcoming_bills"]] == [
+        "2026-10-30", "2026-11-30", "2026-12-30", "2027-01-30",
+    ]
+    assert x["total_bills_due"] == 280
+
+
+def test_month_end_due_date_clamped_to_february():
+    from finance_engine import next_payment_date
+    bill = {
+        "payee": "Rent", "status": "pending", "payment_date": "2026-01-31",
+        "upcoming_payment_date": "2026-01-31", "recurring_date": 31,
+        "frequency": "monthly", "payment_amount": 1400,
+    }
+    assert next_payment_date(bill, date(2026, 2, 1)) == date(2026, 2, 28)
+    x = forecast(2000, 0, [bill], horizon_days=65, today=date(2026, 2, 1))
+    assert x["upcoming_bills"][0]["due_date"] == "2026-02-28"
+    assert x["upcoming_bills"][1]["due_date"] == "2026-03-31"
