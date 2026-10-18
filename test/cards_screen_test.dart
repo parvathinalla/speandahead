@@ -12,7 +12,8 @@ void main() {
     });
 
     await tester.pumpWidget(const MaterialApp(home: CardsScreen()));
-    await tester.pump();
+    // Let the bounded location request finish in the plugin-free test environment.
+    await tester.pump(const Duration(seconds: 21));
 
     expect(find.text('SpendAhead Live'), findsOneWidget);
     expect(find.text('Current location'), findsOneWidget);

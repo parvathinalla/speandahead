@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import sys
+import httpx
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -26,6 +27,21 @@ def main():
     accounts = data.get("accounts", {}).get(slot, {})
     if not customer or not accounts.get("checking"):
         parser.error("Slot not seeded. Run seed_nessie_bulk.py --apply first.")
+    NessieLinkStore.validate_mapping(customer, accounts)
+    base = os.getenv("NESSIE_BASE_URL", "https://prod-api.nessieisreal.com").rstrip("/")
+    if not base.startswith("https://") or not os.getenv("NESSIE_API_KEY"):
+        parser.error("Configure HTTPS Nessie endpoint and private API key first")
+    try:
+        with httpx.Client(timeout=15) as client:
+            for account_id in accounts.values():
+                response = client.get(base + "/accounts/" + account_id,
+                                      params={"key": os.environ["NESSIE_API_KEY"]})
+                response.raise_for_status()
+                record = response.json()
+                if record.get("_id") != account_id or record.get("customer_id") != customer:
+                    parser.error("Nessie account ownership mismatch; nothing linked")
+    except (httpx.HTTPError, ValueError):
+        parser.error("Unable to verify Nessie ownership; nothing linked")
     store = NessieLinkStore(os.getenv("TIGERDATA_DATABASE_URL", ""))
     store.initialize()
     store.link(args.subject, customer, accounts)

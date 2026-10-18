@@ -15,6 +15,9 @@ from pydantic import BaseModel, Field
 
 
 def initialize(connection):
+    if getattr(connection, "is_joint_postgres", False):
+        # Schema was initialized once at startup or by the provisioning CLI.
+        return
     connection.executescript("""
     CREATE TABLE IF NOT EXISTS joint_accounts (
       account_id TEXT PRIMARY KEY, name TEXT NOT NULL, threshold_cents INTEGER,
@@ -30,14 +33,20 @@ def initialize(connection):
     connection.commit()
 
 
+def storage_user(connection, user):
+    """Keep Auth0 subjects out of TigerData; SQLite test fixtures are unchanged."""
+    return connection.identity(user) if getattr(connection, "is_joint_postgres", False) else user
+
+
 def membership(connection, user):
+    subject = storage_user(connection, user)
     row = connection.execute(
         "SELECT * FROM joint_accounts WHERE primary_sub=? OR dependent_sub=?",
-        (user, user)).fetchone()
+        (subject, subject)).fetchone()
     if not row:
         raise HTTPException(403, "You are not a member of a linked joint account")
     result = dict(row)
-    result["role"] = "primary" if row["primary_sub"] == user else "dependent"
+    result["role"] = "primary" if row["primary_sub"] == subject else "dependent"
     result["recipients"] = json.loads(row["recipients"])
     return result
 
@@ -129,6 +138,7 @@ def create_router(db, actor, gateway, enabled):
     def set_limit(body: Limit, user=Depends(actor)):
         connection = connect()
         try:
+            connection.execute("BEGIN IMMEDIATE")
             member = membership(connection, user)
             if member["role"] != "primary":
                 raise HTTPException(403, "Only the primary holder can set the approval limit")
@@ -155,6 +165,7 @@ def create_router(db, actor, gateway, enabled):
         connection = connect()
         try:
             # Membership and limit may have changed during the external review.
+            connection.execute("BEGIN IMMEDIATE")
             member = membership(connection, user)
             if recipient not in member["recipients"]:
                 raise HTTPException(409, "Recipient changed; review your payment again")
@@ -166,7 +177,7 @@ def create_router(db, actor, gateway, enabled):
             status = "awaiting_primary" if needs_review else "ready"
             connection.execute("""INSERT INTO joint_payments
                 (id,account_id,initiator,primary_sub,status,amount_cents,recipient,reason,assessment)
-                VALUES(?,?,?,?,?,?,?,?,?)""", (identity, member["account_id"], user,
+                VALUES(?,?,?,?,?,?,?,?,?)""", (identity, member["account_id"], storage_user(connection, user),
                 member["primary_sub"], status, cents(body.amount), json.dumps(recipient),
                 body.reason.strip(), json.dumps(assessment)))
             connection.commit()
@@ -181,13 +192,14 @@ def create_router(db, actor, gateway, enabled):
             member = membership(connection, user)
             rows = connection.execute("""SELECT * FROM joint_payments WHERE account_id=?
                 AND (initiator=? OR primary_sub=?) ORDER BY created_at DESC, rowid DESC LIMIT 100""",
-                (member["account_id"], user, user)).fetchall()
+                (member["account_id"], storage_user(connection, user),
+                 storage_user(connection, user))).fetchall()
             return {"payments": [{"id": r["id"], "amount": r["amount_cents"] / 100,
                 "merchant": json.loads(r["recipient"])["name"], "reason": r["reason"],
                 "status": r["status"], "assessment": json.loads(r["assessment"]),
                 "can_decide": member["role"] == "primary" and r["status"] == "awaiting_primary"
-                    and r["initiator"] != user,
-                "can_execute": r["initiator"] == user and r["status"] in ("ready", "approved"),
+                    and r["initiator"] != storage_user(connection, user),
+                "can_execute": r["initiator"] == storage_user(connection, user) and r["status"] in ("ready", "approved"),
                 "approved_by_primary": r["decision_by"] == member["primary_sub"] and r["status"] != "declined",
                 "created_at": r["created_at"], "nessie_id": r["nessie_id"]} for r in rows]}
         finally:
@@ -203,13 +215,13 @@ def create_router(db, actor, gateway, enabled):
                 (payment_id, member["account_id"])).fetchone()
             if not row:
                 raise HTTPException(404, "Payment not found")
-            if member["role"] != "primary" or row["primary_sub"] != user or row["initiator"] == user:
+            if member["role"] != "primary" or row["primary_sub"] != storage_user(connection, user) or row["initiator"] == storage_user(connection, user):
                 raise HTTPException(403, "Only the linked primary holder can decide")
             if row["status"] != "awaiting_primary":
                 raise HTTPException(409, "Payment is no longer awaiting approval")
             status = "approved" if body.approve else "declined"
             connection.execute("UPDATE joint_payments SET status=?,decision_by=? WHERE id=?",
-                               (status, user, payment_id))
+                               (status, storage_user(connection, user), payment_id))
             connection.commit()
             return {"status": status}
         finally:
@@ -228,7 +240,7 @@ def create_router(db, actor, gateway, enabled):
                 (payment_id, observed_member["account_id"])).fetchone()
             if not observed_payment:
                 raise HTTPException(404, "Payment not found")
-            if observed_payment["initiator"] != user:
+            if observed_payment["initiator"] != storage_user(connection, user):
                 raise HTTPException(403, "Only the initiator can send this payment")
             if observed_payment["status"] in ("processing", "submitted", "unknown"):
                 return {"status": observed_payment["status"], "previous_request": True}
@@ -242,7 +254,7 @@ def create_router(db, actor, gateway, enabled):
                 (payment_id, member["account_id"])).fetchone()
             if not row:
                 raise HTTPException(404, "Payment not found")
-            if row["initiator"] != user:
+            if row["initiator"] != storage_user(connection, user):
                 raise HTTPException(403, "Only the initiator can send this payment")
             if row["status"] in ("processing", "submitted", "unknown"):
                 return {"status": row["status"], "previous_request": True}
@@ -261,9 +273,10 @@ def create_router(db, actor, gateway, enabled):
             # Serialize local reservations against the freshly observed balance.
             if account.get("_id") != member["account_id"]:
                 raise HTTPException(502, "Nessie account mismatch")
-            reserved = connection.execute("""SELECT COALESCE(SUM(amount_cents),0) FROM joint_payments
+            reservation = connection.execute("""SELECT COALESCE(SUM(amount_cents),0) AS reserved FROM joint_payments
                 WHERE account_id=? AND status IN ('processing','submitted','unknown')""",
-                (member["account_id"],)).fetchone()[0]
+                (member["account_id"],)).fetchone()
+            reserved = reservation["reserved"]
             if row["amount_cents"] + reserved > cents(account.get("balance", 0)):
                 raise HTTPException(409, "Insufficient available funds after pending sandbox payments")
             connection.execute("UPDATE joint_payments SET status='processing' WHERE id=?", (payment_id,))
@@ -297,7 +310,7 @@ def create_router(db, actor, gateway, enabled):
             member = membership(connection, user)
             row = connection.execute("SELECT * FROM joint_payments WHERE id=? AND account_id=?",
                                      (payment_id, member["account_id"])).fetchone()
-            if not row or user not in (row["initiator"], row["primary_sub"]):
+            if not row or storage_user(connection, user) not in (row["initiator"], row["primary_sub"]):
                 raise HTTPException(404, "Payment not found")
             if row["status"] != "submitted" or not row["nessie_id"]:
                 raise HTTPException(409, "No pending Nessie receipt to reconcile")

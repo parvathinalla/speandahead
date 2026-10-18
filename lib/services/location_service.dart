@@ -1,3 +1,5 @@
+import 'dart:async';
+import 'package:flutter/foundation.dart';
 import 'package:geolocator/geolocator.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -26,12 +28,25 @@ class LocationService {
   AppLocationResult? _lastResult;
 
   Future<AppLocationResult> initialize({bool requestAgain = false}) {
-    if (!requestAgain && _inFlight != null) return _inFlight!;
-    _inFlight = _resolve(requestAgain: requestAgain);
-    return _inFlight!;
+    if (_inFlight != null) return _inFlight!;
+    if (!requestAgain && _lastResult?.status == AppLocationStatus.ready) {
+      return Future.value(_lastResult!);
+    }
+    final request = _resolve(requestAgain: requestAgain).timeout(
+      const Duration(seconds: 20),
+      onTimeout: () => _remember(const AppLocationResult(
+        AppLocationStatus.unavailable,
+        'Location lookup timed out. Check browser location permissions, '
+        'then retry or enter the merchant manually.',
+      )),
+    );
+    _inFlight = request;
+    return request.whenComplete(() {
+      if (identical(_inFlight, request)) _inFlight = null;
+    });
   }
 
-  Future<AppLocationResult> refresh() => _resolve(requestAgain: true);
+  Future<AppLocationResult> refresh() => initialize(requestAgain: true);
 
   Future<AppLocationResult> _resolve({required bool requestAgain}) async {
     try {
@@ -45,7 +60,7 @@ class LocationService {
       }
 
       var permission = await Geolocator.checkPermission();
-      if (permission == LocationPermission.denied) {
+      if (!kIsWeb && permission == LocationPermission.denied) {
         final preferences = await SharedPreferences.getInstance();
         final attempted = preferences.getBool(_promptAttemptedKey) ?? false;
         if (!attempted || requestAgain) {
@@ -58,11 +73,13 @@ class LocationService {
         return _remember(
           const AppLocationResult(
             AppLocationStatus.deniedForever,
-            'Location permission is blocked. Enable it in system settings or enter the merchant manually.',
+            kIsWeb
+                ? 'Location permission is blocked. Allow location for this site in your browser, then retry.'
+                : 'Location permission is blocked. Enable it in system settings or enter the merchant manually.',
           ),
         );
       }
-      if (permission == LocationPermission.denied) {
+      if (!kIsWeb && permission == LocationPermission.denied) {
         return _remember(
           const AppLocationResult(
             AppLocationStatus.denied,
@@ -73,7 +90,9 @@ class LocationService {
 
       final position = await Geolocator.getCurrentPosition(
         locationSettings: const LocationSettings(
-          accuracy: LocationAccuracy.high,
+          // Web requestPermission performs an extra unbounded position lookup.
+          // getCurrentPosition prompts once and applies the browser timeout.
+          accuracy: kIsWeb ? LocationAccuracy.medium : LocationAccuracy.high,
           timeLimit: Duration(seconds: 12),
         ),
       );
@@ -84,6 +103,16 @@ class LocationService {
           position,
         ),
       );
+    } on PermissionDeniedException {
+      return _remember(const AppLocationResult(
+        AppLocationStatus.denied,
+        'Location access was denied. Allow location for this site in your browser, then retry.',
+      ));
+    } on TimeoutException {
+      return _remember(const AppLocationResult(
+        AppLocationStatus.unavailable,
+        'The device did not return a location in time. Check location services or try another browser.',
+      ));
     } catch (_) {
       return _remember(
         const AppLocationResult(
@@ -101,5 +130,6 @@ class LocationService {
 
   AppLocationResult? get lastResult => _lastResult;
 
-  Future<bool> openSettings() => Geolocator.openAppSettings();
+  Future<bool> openSettings() async =>
+      kIsWeb ? false : await Geolocator.openAppSettings();
 }

@@ -17,6 +17,7 @@ class _BillsScreenState extends State<BillsScreen> {
   Map<String, dynamic>? bankProfile;
   bool synthetic = false, loading = true;
   String? error;
+  String? transactionWarning;
 
   @override
   void initState() {
@@ -62,14 +63,15 @@ class _BillsScreenState extends State<BillsScreen> {
       List<Map<String, dynamic>> recent = [];
       if (isSynthetic) {
         profile = await ApiService.getBankingProfile();
-        final tx = await ApiService.getTransactions(limit: 8);
-        recent = (tx['transactions'] as List? ?? [])
-            .map((item) => Map<String, dynamic>.from(item as Map))
-            .toList();
       }
+      final tx = await ApiService.getTransactions(limit: 12);
+      recent = (tx['transactions'] as List? ?? [])
+          .map((item) => Map<String, dynamic>.from(item as Map)).toList();
       if (mounted) setState(() {
         forecast = result; allBills = entries; transactions = recent;
         bankAccounts = accounts; bankProfile = profile;
+        final warnings = (tx['warnings'] as List? ?? []).join(' ');
+        transactionWarning = warnings.isEmpty ? null : warnings;
         synthetic = isSynthetic; loading = false;
       });
     } catch (exception) {
@@ -342,7 +344,7 @@ class _BillsScreenState extends State<BillsScreen> {
             color: AppTheme.brandNavy)),
         Text(synthetic
             ? 'Private fictional banking portfolio • interactive scenario'
-            : 'Nessie sandbox balance + local bill scenario',
+            : 'Nessie sandbox accounts, bills and activity',
             style: const TextStyle(fontSize: 11, color: AppTheme.textSecondary)),
         const SizedBox(height: 14),
         if (synthetic && bankProfile != null)
@@ -460,10 +462,14 @@ class _BillsScreenState extends State<BillsScreen> {
               trailing: Text(dollars(day['balance']),
                   style: const TextStyle(fontWeight: FontWeight.w700))),
         ])),
-        if (synthetic) ...[
+        if (transactions.isNotEmpty) ...[
           const SizedBox(height: 18),
           const Text('Recent simulated activity', style: TextStyle(
               fontSize: 15, fontWeight: FontWeight.w800)),
+          if (transactionWarning != null) Padding(
+            padding: const EdgeInsets.symmetric(vertical: 8),
+            child: Text(transactionWarning!, style: const TextStyle(
+                fontSize: 12, color: AppTheme.textSecondary))),
           Card(child: Column(children: [
             for (final txn in transactions)
               ListTile(

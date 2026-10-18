@@ -184,6 +184,38 @@ def test_pending_transfers_reserve_funds(client):
     assert len(fake.calls) == 1
 
 
+def test_reservation_supports_postgres_dictionary_rows(client, monkeypatch):
+    c, fake = client
+    original = main.joint_db
+
+    class DictionaryAggregate:
+        def __init__(self, raw):
+            self.raw = raw
+
+        def __getattr__(self, name):
+            return getattr(self.raw, name)
+
+        def execute(self, sql, params=()):
+            cursor = self.raw.execute(sql, params)
+            if 'SUM(amount_cents)' in sql:
+                value = cursor.fetchone()[0]
+                class Result:
+                    def fetchone(self):
+                        return {'reserved': value}
+                return Result()
+            return cursor
+
+    monkeypatch.setattr(main, 'joint_db', lambda: DictionaryAggregate(original()))
+    # The router captures joint_db at registration, so replace its callable's
+    # underlying SQLite factory instead to exercise dictionary aggregate rows.
+    original_db = main.db
+    monkeypatch.setattr(main, 'db', lambda: DictionaryAggregate(original_db()))
+    limit(c, 10000)
+    assert execute(c, create(c, 1500)['payment_id']).status_code == 200
+    assert execute(c, create(c, 600)['payment_id']).status_code == 409
+    assert len(fake.calls) == 1
+
+
 def test_reconciliation_matches_receipt_and_releases_local_reserve(client):
     c, _ = client
     limit(c, 10000)

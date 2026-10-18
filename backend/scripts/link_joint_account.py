@@ -12,6 +12,8 @@ import sys
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import main
 from joint_accounts import initialize
+from joint_pg import JointPostgres
+from nessie_links import NessieLinkStore
 
 
 def valid_account_id(value):
@@ -33,14 +35,16 @@ def provision(connection, account_id, primary, dependent, name, recipients):
             raise ValueError("Each recipient needs id, name and a Nessie account_id")
         if r['account_id'].lower() == account_id.lower():
             raise ValueError("A recipient cannot be the payer account")
+    primary_key = NessieLinkStore.key(primary) if getattr(connection, 'is_joint_postgres', False) else primary
+    dependent_key = NessieLinkStore.key(dependent) if getattr(connection, 'is_joint_postgres', False) else dependent
     connection.execute('BEGIN IMMEDIATE')
-    for subject in (primary, dependent):
+    for subject in (primary_key, dependent_key):
         if connection.execute('SELECT 1 FROM joint_accounts WHERE primary_sub=? OR dependent_sub=?',
                               (subject, subject)).fetchone():
             raise ValueError("User already belongs to a joint account; refusing overwrite")
     connection.execute('''INSERT INTO joint_accounts
         (account_id,name,primary_sub,dependent_sub,recipients) VALUES(?,?,?,?,?)''',
-        (account_id, name, primary, dependent, json.dumps(recipients)))
+        (account_id, name, primary_key, dependent_key, json.dumps(recipients)))
     connection.commit()
 
 
@@ -52,7 +56,9 @@ if __name__ == '__main__':
     p.add_argument('--name', default='Joint checking')
     p.add_argument('--recipients', type=Path, required=True)
     args = p.parse_args()
-    connection = main.db()
+    if main.JOINT_STORE == 'tigerdata':
+        main.joint_pg_store().initialize()
+    connection = main.joint_db()
     try:
         provision(connection, args.account_id, args.primary_sub, args.dependent_sub,
                   args.name, json.loads(args.recipients.read_text(encoding='utf-8')))

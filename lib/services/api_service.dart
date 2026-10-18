@@ -86,7 +86,13 @@ class ApiService {
         );
       }
       final uri = Uri.parse('$baseUrl$path');
-      final accessToken = await tokenProvider?.call();
+      String? accessToken;
+      try {
+        accessToken = await tokenProvider?.call();
+      } on TimeoutException {
+        throw ApiException('Secure session verification timed out. '
+            'Retry, or sign out and sign in again.');
+      }
       final headers = <String, String>{
         'Content-Type': 'application/json',
         if (accessToken != null && accessToken.isNotEmpty)
@@ -122,10 +128,9 @@ class ApiService {
     } on ApiException {
       rethrow; // Preserve backend HTTP status such as 503.
     } on TimeoutException {
-      throw ApiException(
-        'Backend took too long at $baseUrl. '
-        'Nessie may be temporarily slow. Tap Retry.',
-      );
+      throw ApiException('Account request $path timed out at $baseUrl. '
+          'Your existing account links have not been changed. Tap Retry.');
+
     } on http.ClientException {
       throw ApiException(
         'Browser could not reach $baseUrl. '
@@ -376,8 +381,9 @@ class ApiService {
 
   /// Personalized agent. The backend independently loads the signed-in
   /// user's financial sandbox; clients cannot submit arbitrary balances.
-  static Future<Map<String, dynamic>> agentChat(String message) =>
-      _request('POST', '/api/agent/chat', {'message': message});
+  static Future<Map<String, dynamic>> agentChat(String message,
+          {List<Map<String, String>> history = const []}) =>
+      _request('POST', '/api/agent/chat', {'message': message, 'history': history});
 
   static Future<Map<String, dynamic>> agentSettings() =>
       _request('GET', '/api/agent/settings');

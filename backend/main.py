@@ -32,6 +32,8 @@ from finance_engine import (
 import synthetic_bank as demo_bank
 from tigerdata_store import TigerDataStore
 from nessie_links import NessieLinkStore
+from nessie_activity import history as nessie_history, refresh_bills as refresh_nessie_bills
+from joint_pg import JointPostgres
 from agent_memory import AgentMemory
 from agent_service import ask_gemini, extract_trip_plan, snapshot as agent_snapshot
 from push_notifications import send_cashflow_warning, send_hurricane_warning
@@ -45,6 +47,7 @@ SQLITE = Path(os.getenv("DB_PATH", str(ROOT / "creditpilot.sqlite3")))
 AUTH_MODE = os.getenv("AUTH_MODE", "demo").strip().lower()
 DATA_MODE = os.getenv("DEMO_DATA_MODE", "synthetic" if AUTH_MODE == "auth0" else "nessie").strip().lower()
 DEMO_STORE = os.getenv("DEMO_STORE", "sqlite").strip().lower()
+JOINT_STORE = os.getenv("JOINT_STORE", "sqlite").strip().lower()
 ENVIRONMENT = os.getenv("APP_ENV", "development").strip().lower()
 TENANTS_DIR = Path(os.getenv("TENANT_MANIFEST_DIR", str(ROOT / "private" / "tenants")))
 PAYMENT_MODE = os.getenv("PAYMENT_MODE", "simulate").strip().lower()
@@ -62,6 +65,13 @@ if DATA_MODE not in ("nessie", "synthetic"):
     raise RuntimeError("DEMO_DATA_MODE must be nessie or synthetic")
 if DEMO_STORE not in ("sqlite", "tigerdata"):
     raise RuntimeError("DEMO_STORE must be sqlite or tigerdata")
+if JOINT_STORE not in ("sqlite", "tigerdata"):
+    raise RuntimeError("JOINT_STORE must be sqlite or tigerdata")
+if JOINT_STORE == "tigerdata" and (
+    AUTH_MODE != "auth0" or DATA_MODE != "nessie" or
+    not os.getenv("TIGERDATA_DATABASE_URL")
+):
+    raise RuntimeError("JOINT_STORE=tigerdata requires Auth0, Nessie mode and TigerData URL")
 if DEMO_STORE == "tigerdata":
     if AUTH_MODE != "auth0":
         raise RuntimeError("TigerData backend requires Auth0 authentication")
@@ -117,6 +127,16 @@ def nessie_links() -> NessieLinkStore:
 
 
 @lru_cache(maxsize=1)
+def joint_pg_store() -> JointPostgres:
+    return JointPostgres(os.getenv("TIGERDATA_DATABASE_URL", ""))
+
+
+def joint_db():
+    """Use persistent TigerData for Nessie joint permissions when explicitly enabled."""
+    return joint_pg_store().connect() if JOINT_STORE == "tigerdata" else db()
+
+
+@lru_cache(maxsize=1)
 def agent_memory() -> AgentMemory:
     # Independent of whether Nessie or a synthetic portfolio supplies data.
     pg_url = os.getenv("TIGERDATA_DATABASE_URL", "").strip() or None
@@ -158,6 +178,8 @@ def init_db():
                 demo_bank.initialize(connection)
         if using_nessie_links():
             nessie_links().initialize()
+        if JOINT_STORE == "tigerdata":
+            joint_pg_store().initialize()
     finally:
         connection.close()
     if PUSH_ENABLED:
@@ -206,7 +228,10 @@ def manifest_path_for(user: str) -> Path:
 
 def has_linked_sandbox(user: str) -> bool:
     if using_nessie_links():
-        return nessie_links().get(user) is not None
+        try:
+            return nessie_links().get(user) is not None
+        except (ValueError, TypeError):
+            raise HTTPException(503, "Account mapping requires administrator review") from None
     if using_tigerdata():
         return tiger_store().get(user) is not None
     if DATA_MODE == "synthetic":
@@ -229,14 +254,21 @@ def has_linked_sandbox(user: str) -> bool:
 
 def manifest(user: str = "demo-sarah") -> dict:
     if using_nessie_links():
-        linked = nessie_links().get(user)
+        try:
+            linked = nessie_links().get(user)
+        except (ValueError, TypeError):
+            raise HTTPException(503, "Account mapping requires administrator review") from None
         if not linked:
             raise HTTPException(409, "No Nessie account linked to this login")
         return {
             "owner_sub": user, "source": "nessie_sandbox",
             "ids": {"customers": {"primary": linked["customer_id"]},
                     "accounts": linked["accounts"]},
-            "app_bills": {}, "app_scenario": {},
+            "app_bills": linked.get("scenario", {}).get("app_bills", {}),
+            "app_scenario": linked.get("scenario", {}).get("app_scenario", {}),
+            "monthly_income": linked.get("scenario", {}).get("monthly_income"),
+            "bill_source": linked.get("scenario", {}).get("history_seed", {}).get("bill_schedule_source", "local_app_simulation"),
+            "observed_history": linked.get("scenario", {}).get("observed_history"),
         }
     if using_tigerdata():
         try:
@@ -441,14 +473,19 @@ async def accounts(g: NessieGateway, m: dict) -> dict:
         return m["accounts"]
     ids = m["ids"]["accounts"]
     if isinstance(g, NessieGateway):
-        return await g.account_snapshot(ids)
-    # Keep injected test adapters simple; they need only expose account(id).
-    names = tuple(ids)
-    records = await asyncio.gather(*(g.account(ids[name]) for name in names))
-    mapped = dict(zip(names, records))
+        mapped = await g.account_snapshot(ids)
+    else:
+        # Keep injected test adapters simple; they need only expose account(id).
+        names = tuple(ids)
+        records = await asyncio.gather(*(g.account(ids[name]) for name in names))
+        mapped = dict(zip(names, records))
+    customer = m["ids"].get("customers", {}).get("primary")
     for name, rec in mapped.items():
         if rec.get("_id") != ids[name]:
             raise HTTPException(502, "Nessie returned a mismatched account ID")
+        if using_nessie_links() and customer and rec.get("customer_id") != customer:
+            raise HTTPException(502, "Nessie account ownership does not match the authenticated mapping")
+    await refresh_nessie_bills(g, m)
     return mapped
 
 
@@ -487,8 +524,8 @@ def forecast_from(a, m, days=14, reserve=0):
                       bills(m), days, reserve)
     result["data_sources"] = {
         "balances": m.get("source", "nessie_sandbox"),
-        "bills": m.get("source", "local_app_simulation")
-                 if m.get("source") == demo_bank.DATA_SOURCE else "local_app_simulation",
+        "bills": demo_bank.DATA_SOURCE if m.get("source") == demo_bank.DATA_SOURCE
+                 else m.get('bill_source', 'local_app_simulation'),
     }
     return result
 
@@ -538,7 +575,7 @@ async def hurricane_assessment(owner: str, region: str, safety_buffer: float,
     simulated_cost = sum(HURRICANE_EXPENSES.values())
     result = emergency(
         account_amount(account_values["checking"]),
-        account_amount(account_values["savings"]),
+        account_amount(account_values["savings"]) if "savings" in account_values else 0,
         upcoming["total_bills_due"], simulated_cost, safety_buffer,
     )
     gap = float(result["potential_gap"])
@@ -785,8 +822,9 @@ async def get_accounts(request: Request, user=Depends(actor)):
 
 
 @app.get("/api/bills")
-def get_bills(user=Depends(actor)):
+async def get_bills(request: Request, user=Depends(actor)):
     m = manifest(user)
+    await refresh_nessie_bills(gateway(request), m)
     upcoming = []
     for bill in bills(m):
         item = dict(bill)
@@ -794,7 +832,8 @@ def get_bills(user=Depends(actor)):
             item["payment_date"] = next_payment_date(item).isoformat()
             item["upcoming_payment_date"] = item["payment_date"]
         upcoming.append(item)
-    return {"bills": upcoming, "source": m.get("source", "local_app_simulation")}
+    return {"bills": upcoming, "past_bills": m.get('past_bills', []),
+            "source": m.get("source", "local_app_simulation")}
 
 
 def require_synthetic():
@@ -866,11 +905,17 @@ async def get_card_catalog(request: Request, user=Depends(actor)):
 
 
 @app.get("/api/transactions")
-def get_demo_transactions(limit: int = 50, offset: int = 0, user=Depends(actor)):
-    require_synthetic()
+async def get_demo_transactions(request: Request, limit: int = 50, offset: int = 0, user=Depends(actor)):
     if not 1 <= limit <= 100 or offset < 0:
         raise HTTPException(422, "Limit must be 1–100, offset must be nonnegative")
     m = manifest(user)
+    if DATA_MODE == 'nessie':
+        g = gateway(request)
+        await accounts(g, m)
+        result = await nessie_history(g, m)
+        records = result['transactions']
+        return {**result, 'transactions': records[offset:offset + limit], 'total': len(records),
+                'limit': limit, 'offset': offset}
     if using_tigerdata():
         return tiger_store().transactions(user, limit, offset)
     records = m.get("transactions", [])
@@ -879,21 +924,25 @@ def get_demo_transactions(limit: int = 50, offset: int = 0, user=Depends(actor))
 
 
 @app.get("/api/transactions/summary")
-def get_spending_summary(days: int = 30, user=Depends(actor)):
-    require_synthetic()
+async def get_spending_summary(request: Request, days: int = 30, user=Depends(actor)):
     if not 1 <= days <= 365:
         raise HTTPException(422, "Days must be between 1 and 365")
     m = manifest(user)
+    activity = None
+    if DATA_MODE == 'nessie':
+        g = gateway(request)
+        await accounts(g, m)
+        activity = await nessie_history(g, m)
     if using_tigerdata():
         return tiger_store().spending_summary(user, days)
     # SQLite compatibility: the same output contract for SDK consumers.
     today = date.today()
     totals = {}
-    for item in m.get("transactions", []):
+    for item in activity['transactions'] if activity is not None else m.get("transactions", []):
         when = date.fromisoformat(str(item["date"])[:10])
         if (today - when).days not in range(days + 1):
             continue
-        if item["direction"] != "debit" or item["category"] == "transfer":
+        if item["direction"] != "debit" or item["category"] in ("transfer", "card_payment"):
             continue
         category = item["category"]
         row = totals.setdefault(category, {"category": category, "amount": 0.0, "count": 0})
@@ -901,7 +950,23 @@ def get_spending_summary(days: int = 30, user=Depends(actor)):
         row["count"] += 1
     rows = sorted(totals.values(), key=lambda x: x["amount"], reverse=True)
     return {"period_days": days, "by_category": rows,
-            "source": demo_bank.DATA_SOURCE, "storage": "sqlite"}
+            "source": 'nessie_sandbox' if activity is not None else demo_bank.DATA_SOURCE,
+            "warnings": activity['warnings'] if activity is not None else [],
+            "storage": 'nessie' if activity is not None else "sqlite"}
+
+
+@app.get('/api/loans')
+async def get_loans(request: Request, user=Depends(actor)):
+    if DATA_MODE != 'nessie':
+        return {'loans': [], 'source': demo_bank.DATA_SOURCE}
+    m = manifest(user)
+    g = gateway(request)
+    await accounts(g, m)
+    loans = await g.request('GET', '/accounts/' + m['ids']['accounts']['checking'] + '/loans')
+    return {'loans': [{'id': row['_id'], 'type': row.get('type'), 'status': row.get('status'),
+                       'amount': row.get('amount'), 'monthly_payment': row.get('monthly_payment'),
+                       'description': row.get('description'), 'source': 'nessie_sandbox'} for row in loans],
+            'source': 'nessie_sandbox'}
 
 
 class DemoBillInput(BaseModel):
@@ -1036,7 +1101,7 @@ async def cards_evaluate(body: CardRequest, request: Request, user=Depends(actor
     result["merchant_name"] = body.merchant_name
     result["data_sources"] = {
         "balances": m.get("source", "nessie_sandbox"),
-        "rewards_and_limits": m.get("source", "local_app_simulation"),
+        "rewards_and_limits": demo_bank.DATA_SOURCE if m.get("source") == demo_bank.DATA_SOURCE else "local_app_simulation",
     }
     return result
 
@@ -1072,8 +1137,10 @@ async def calculate_autopay(body, g, user):
         days=int(x.get("statement_closes_in_days", 9)))
     statement = statement_date.isoformat()
     transfer = money(body.assumed_savings_transfer)
-    remaining_savings = money(account_amount(a["savings"])) - transfer
-    if remaining_savings < money(body.savings_reserve):
+    remaining_savings = money(account_amount(a["savings"]) if "savings" in a else 0) - transfer
+    if "savings" not in a and transfer > 0:
+        raise HTTPException(409, "No savings account is linked for this what-if transfer")
+    if "savings" in a and remaining_savings < money(body.savings_reserve):
         raise HTTPException(409, "What-if savings transfer would violate protected savings reserve")
     checking_for_plan = money(account_amount(a["checking"])) + transfer
     if body.adaptive_target:
@@ -1172,7 +1239,7 @@ async def calculate_autopay(body, g, user):
     ]
     result["data_sources"] = {
         "balances": m.get("source", "nessie_sandbox"),
-        "credit_limit_and_statement": m.get("source", "local_app_simulation"),
+        "credit_limit_and_statement": demo_bank.DATA_SOURCE if m.get("source") == demo_bank.DATA_SOURCE else "local_app_simulation",
     }
     return result
 
@@ -1370,7 +1437,7 @@ async def evaluate_emergency(body: EmergencyRequest, request: Request, user=Depe
     m = manifest(user)
     a = await accounts(gateway(request), m)
     f = forecast_from(a, m, body.horizon_days)
-    result = emergency(account_amount(a["checking"]), account_amount(a["savings"]),
+    result = emergency(account_amount(a["checking"]), account_amount(a["savings"]) if "savings" in a else 0,
                        f["total_bills_due"], body.emergency_cost, body.safety_buffer)
     result["data_sources"] = f["data_sources"]
     return result
@@ -1439,7 +1506,7 @@ def unsubscribe_hurricane_simulation(user=Depends(actor)):
 # Legacy partner routes are intentionally removed: only verified membership and
 # primary/dependent roles authorize the joint payment workflow.
 from joint_accounts import create_router as joint_router
-app.include_router(joint_router(db, actor, gateway, lambda:
+app.include_router(joint_router(joint_db, actor, gateway, lambda:
     AUTH_MODE == "auth0" and DATA_MODE == "nessie" and PAYMENT_MODE == "nessie"))
 
 
@@ -1454,6 +1521,8 @@ class TransferRequest(BaseModel):
 async def preview_transfer(body: TransferRequest, request: Request, user=Depends(actor)):
     m = manifest(user)
     a = await accounts(gateway(request), m)
+    if "savings" not in a:
+        raise HTTPException(409, "No savings account is linked for this transfer")
     balance = account_amount(a["savings"])
     max_safe = max(0, amount(balance - body.savings_reserve))
     return {"amount": body.amount, "source": "savings", "destination": "checking",
@@ -1561,7 +1630,7 @@ async def integrated_decision(body: PurchaseDecision, request: Request, user=Dep
               "note": "Credit-card purchases add future repayment obligations; an immediate checking debit does not occur."}
     if body.emergency_cost is not None:
         result["emergency_stress_test"] = emergency(
-            account_amount(a["checking"]), account_amount(a["savings"]),
+            account_amount(a["checking"]), account_amount(a["savings"]) if "savings" in a else 0,
             f["total_bills_due"], body.emergency_cost, 300)
     return result
 
@@ -1683,6 +1752,7 @@ class MemoryNote(BaseModel):
 
 class AgentChatRequest(BaseModel):
     message: str = Field(..., min_length=2, max_length=1300)
+    history: list[dict[str, str]] = Field(default_factory=list, max_length=12)
 
 
 @app.get("/api/agent/settings")
@@ -1740,19 +1810,21 @@ def ai_history(user=Depends(actor)):
 async def ai_agent_chat(body: AgentChatRequest, request: Request, user=Depends(actor)):
     # Never accept balances, accounts, customer IDs or memory owner in the
     # request body. Fetch the user's own authorized sandbox accounts directly.
-    m = manifest(user)
-    a = await accounts(gateway(request), m)
+    m = await asyncio.to_thread(manifest, user)
+    repo = await asyncio.to_thread(agent_memory)
+    a, (opted_in, saved_history, notes) = await asyncio.gather(
+        accounts(gateway(request), m), asyncio.to_thread(repo.context, user))
     verified_context = agent_snapshot(a, m, forecast_from(a, m), card_rules(m, a))
-    repo = agent_memory()
-    opted_in = repo.enabled(user)
-    history = repo.history(user) if opted_in else []
-    notes = repo.memories(user) if opted_in else []
+    history = [{"role": turn.get("role"), "content": turn.get("content", "")[:800]}
+               for turn in body.history if turn.get("role") in ("user", "assistant")]
+    if not history and opted_in:
+        history = saved_history
     response, ai_used = await ask_gemini(
         body.message.strip(), verified_context, notes, history)
     if ai_used and opted_in:
         # Store only authenticated user's messages. Disable/delete revokes.
-        repo.append(user, "user", body.message.strip())
-        repo.append(user, "assistant", response)
+        await asyncio.to_thread(repo.append, user, "user", body.message.strip())
+        await asyncio.to_thread(repo.append, user, "assistant", response)
     return {"response": response, "ai_used": ai_used,
             "memory_enabled": opted_in, "bank_data_source": verified_context["source"],
             "banking_is_sandbox": True, "context_source": "server_verified"}
