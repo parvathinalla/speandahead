@@ -1,4 +1,3 @@
-
 import 'package:flutter/material.dart';
 
 import 'auth/auth_session.dart';
@@ -7,9 +6,11 @@ import 'screens/account_onboarding_screen.dart';
 import 'screens/main_shell.dart';
 import 'screens/welcome_screen.dart';
 import 'theme/app_theme.dart';
+import 'services/push_notification_service.dart';
 
-void main() {
+Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  await PushNotificationService.instance.initialize();
   runApp(const CreditPilotApp());
 }
 

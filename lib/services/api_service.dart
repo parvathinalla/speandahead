@@ -15,8 +15,23 @@ class ApiException implements Exception {
 }
 
 class ApiService {
-  static Future<Map<String, dynamic>> dailyCashflowReminder() =>
-      _request('POST', '/api/notifications/cashflow/daily');
+  static Future<Map<String, dynamic>> registerPushDevice({
+    required String token,
+    required String platform,
+  }) =>
+      _request('POST', '/api/push/register', {
+        'token': token,
+        'platform': platform,
+      });
+
+  static Future<Map<String, dynamic>> unregisterPushDevice({
+    required String token,
+    required String platform,
+  }) =>
+      _request('POST', '/api/push/unregister', {
+        'token': token,
+        'platform': platform,
+      });
 
   static Future<Map<String, dynamic>> jointMembership() =>
       _request('GET', '/api/joint/membership');

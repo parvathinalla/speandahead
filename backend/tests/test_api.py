@@ -84,22 +84,50 @@ def test_bill_forecast(client):
     assert response.json()["total_bills_due"] == 400
 
 
-def test_daily_cashflow_reminder_is_sent_once(client):
-    first = client.post("/api/notifications/cashflow/daily")
-    second = client.post("/api/notifications/cashflow/daily")
-    assert first.status_code == 200
-    assert first.json()["should_notify"] is True
-    assert first.json()["forecast"]["first_shortfall_amount"] == 50
-    assert second.status_code == 200
-    assert second.json()["should_notify"] is False
+def test_push_device_registration_and_daily_delivery(client):
+    import asyncio
+
+    token = "test-fcm-registration-token-1234567890"
+    registered = client.post(
+        "/api/push/register", json={"token": token, "platform": "android"})
+    assert registered.status_code == 200
+    sent = []
+
+    def fake_sender(tokens, title, body):
+        sent.append((tokens, title, body))
+        return {"success_count": len(tokens), "invalid_tokens": []}
+
+    first = asyncio.run(main.run_daily_push_cycle(main.app.state.nessie, fake_sender))
+    second = asyncio.run(main.run_daily_push_cycle(main.app.state.nessie, fake_sender))
+    assert first == {"users_notified": 1}
+    assert second == {"users_notified": 0}
+    assert sent[0][0] == [token]
+    assert sent[0][1] == "CreditPilot cash warning"
+    assert sent[0][2].endswith("......")
+    assert "$50.00 short" in sent[0][2]
+
+    removed = client.post(
+        "/api/push/unregister", json={"token": token, "platform": "android"})
+    assert removed.json() == {"unregistered": True}
 
 
-def test_daily_cashflow_reminder_is_silent_without_deficit(client):
+def test_daily_push_is_silent_without_deficit(client):
+    import asyncio
+
+    client.post("/api/push/register", json={
+        "token": "test-fcm-registration-token-1234567890",
+        "platform": "ios",
+    })
     main.app.state.nessie.data["checking"] = 600
-    response = client.post("/api/notifications/cashflow/daily")
-    assert response.status_code == 200
-    assert response.json()["should_notify"] is False
-    assert response.json()["forecast"]["is_shortfall"] is False
+    sent = []
+
+    def fake_sender(*args):
+        sent.append(args)
+        return {"success_count": 1, "invalid_tokens": []}
+
+    result = asyncio.run(main.run_daily_push_cycle(main.app.state.nessie, fake_sender))
+    assert result == {"users_notified": 0}
+    assert sent == []
 
 
 def test_card_recommendation(client):

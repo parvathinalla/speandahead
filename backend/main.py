@@ -31,6 +31,7 @@ from tigerdata_store import TigerDataStore
 from nessie_links import NessieLinkStore
 from agent_memory import AgentMemory
 from agent_service import ask_gemini, snapshot as agent_snapshot
+from push_notifications import send_cashflow_warning
 
 ROOT = Path(__file__).resolve().parent
 load_dotenv(ROOT / ".env")
@@ -44,6 +45,8 @@ ENVIRONMENT = os.getenv("APP_ENV", "development").strip().lower()
 TENANTS_DIR = Path(os.getenv("TENANT_MANIFEST_DIR", str(ROOT / "private" / "tenants")))
 PAYMENT_MODE = os.getenv("PAYMENT_MODE", "simulate").strip().lower()
 ORIGINS = [o.strip() for o in os.getenv("CORS_ORIGINS", "http://localhost:3000,http://localhost:8080,http://127.0.0.1:8080").split(",") if o.strip()]
+PUSH_ENABLED = os.getenv("PUSH_NOTIFICATIONS_ENABLED", "false").strip().lower() == "true"
+PUSH_DAILY_HOUR = int(os.getenv("PUSH_DAILY_HOUR_LOCAL", "9"))
 
 if AUTH_MODE not in ("demo", "auth0"):
     raise RuntimeError("AUTH_MODE must be demo or auth0")
@@ -65,6 +68,8 @@ if PAYMENT_MODE == "nessie" and AUTH_MODE == "demo":
     raise RuntimeError("Nessie transfer execution requires AUTH_MODE=auth0; demo stays simulation-only")
 if ENVIRONMENT not in ("development", "test", "production"):
     raise RuntimeError("APP_ENV must be development, test, or production")
+if PUSH_DAILY_HOUR not in range(24):
+    raise RuntimeError("PUSH_DAILY_HOUR_LOCAL must be between 0 and 23")
 if ENVIRONMENT == "production":
     if AUTH_MODE != "auth0":
         raise RuntimeError("Production must use AUTH_MODE=auth0")
@@ -120,6 +125,11 @@ def db():
         id TEXT PRIMARY KEY, owner TEXT NOT NULL, action_type TEXT NOT NULL,
         status TEXT NOT NULL, payload TEXT NOT NULL, created_at TEXT DEFAULT CURRENT_TIMESTAMP
     )""")
+    conn.execute("""CREATE TABLE IF NOT EXISTS push_devices (
+        token TEXT PRIMARY KEY, owner TEXT NOT NULL, platform TEXT NOT NULL,
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+    )""")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_push_devices_owner ON push_devices(owner)")
     conn.commit()
     return conn
 
@@ -137,6 +147,19 @@ def init_db():
             nessie_links().initialize()
     finally:
         connection.close()
+    if PUSH_ENABLED:
+        app.state.push_task = asyncio.create_task(push_notification_loop())
+
+
+@app.on_event("shutdown")
+async def stop_push_notifications():
+    task = getattr(app.state, "push_task", None)
+    if task is not None:
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
 
 
 @app.middleware("http")
@@ -455,6 +478,106 @@ def forecast_from(a, m, days=14, reserve=0):
     return result
 
 
+class PushDeviceInput(BaseModel):
+    token: str = Field(min_length=20, max_length=4096)
+    platform: str = Field(pattern="^(android|ios)$")
+
+
+def _cashflow_push_text(forecast_result: dict) -> str:
+    bill = str(forecast_result.get("first_shortfall_bill") or "An upcoming bill")
+    shortfall = float(forecast_result.get("first_shortfall_amount") or 0)
+    raw_date = str(forecast_result.get("first_shortfall_date") or "")
+    try:
+        parsed = date.fromisoformat(raw_date)
+        due = parsed.strftime("%b ") + str(parsed.day)
+    except ValueError:
+        due = "soon"
+    return f"Heads up—{bill} may leave you ${shortfall:.2f} short on {due}......"
+
+
+async def run_daily_push_cycle(gateway_instance=None, sender=send_cashflow_warning):
+    """Send each registered user at most one warning for today's forecast."""
+    connection = db()
+    try:
+        owners = [row["owner"] for row in connection.execute(
+            "SELECT DISTINCT owner FROM push_devices").fetchall()]
+    finally:
+        connection.close()
+
+    gateway_instance = gateway_instance or getattr(app.state, "nessie", None) or NessieGateway()
+    delivered = 0
+    today = date.today().isoformat()
+    for owner in owners:
+        reminder_id = None
+        try:
+            profile = manifest(owner)
+            account_values = await accounts(gateway_instance, profile)
+            forecast_result = forecast_from(account_values, profile, days=7)
+            if not forecast_result["is_shortfall"]:
+                continue
+
+            reminder_id = hashlib.sha256(
+                (owner + "|cashflow-push|" + today).encode("utf-8")).hexdigest()
+            connection = db()
+            try:
+                claimed = connection.execute(
+                    "INSERT OR IGNORE INTO actions(id,owner,action_type,status,payload) "
+                    "VALUES (?,?,?,?,?)",
+                    (reminder_id, owner, "cashflow_push", "sending",
+                     json.dumps({"date": today,
+                                 "shortfall_amount": forecast_result["shortfall_amount"],
+                                 "first_shortfall_date": forecast_result["first_shortfall_date"]}))).rowcount == 1
+                tokens = [row["token"] for row in connection.execute(
+                    "SELECT token FROM push_devices WHERE owner=?", (owner,)).fetchall()]
+                connection.commit()
+            finally:
+                connection.close()
+            if not claimed or not tokens:
+                continue
+
+            result = await asyncio.to_thread(
+                sender, tokens, "CreditPilot cash warning",
+                _cashflow_push_text(forecast_result))
+            connection = db()
+            try:
+                for token in result.get("invalid_tokens", []):
+                    connection.execute("DELETE FROM push_devices WHERE token=?", (token,))
+                if result.get("success_count", 0) > 0:
+                    connection.execute(
+                        "UPDATE actions SET status='delivered' WHERE id=?", (reminder_id,))
+                    delivered += 1
+                else:
+                    connection.execute("DELETE FROM actions WHERE id=?", (reminder_id,))
+                connection.commit()
+            finally:
+                connection.close()
+        except Exception:
+            # One unavailable sandbox or bad device must not stop other users.
+            if reminder_id is not None:
+                connection = db()
+                try:
+                    connection.execute(
+                        "DELETE FROM actions WHERE id=? AND status='sending'",
+                        (reminder_id,))
+                    connection.commit()
+                finally:
+                    connection.close()
+            continue
+    return {"users_notified": delivered}
+
+
+async def push_notification_loop():
+    """Run the server-side daily check; disabled unless explicitly configured."""
+    last_attempt = None
+    while True:
+        now = __import__("datetime").datetime.now()
+        today = now.date().isoformat()
+        if now.hour >= PUSH_DAILY_HOUR and last_attempt != today:
+            last_attempt = today
+            await run_daily_push_cycle()
+        await asyncio.sleep(60 * 15)
+
+
 @app.get("/health")
 def health():
     return {"status": "ok", "app": "CreditPilot", "auth_mode": AUTH_MODE,
@@ -478,31 +601,32 @@ async def dashboard(request: Request, user=Depends(actor)):
         "bill_forecast": f, "data_sources": f["data_sources"]}
 
 
-@app.post("/api/notifications/cashflow/daily")
-async def daily_cashflow_reminder(request: Request, user=Depends(actor)):
-    """Return at most one 7-day shortfall reminder per user per calendar day."""
-    m = manifest(user)
-    a = await accounts(gateway(request), m)
-    forecast_result = forecast_from(a, m, days=7)
-    should_notify = False
-    if forecast_result["is_shortfall"]:
-        day = date.today().isoformat()
-        reminder_id = hashlib.sha256(
-            (user + "|cashflow-shortfall|" + day).encode("utf-8")).hexdigest()
-        connection = db()
-        try:
-            cursor = connection.execute(
-                "INSERT OR IGNORE INTO actions(id,owner,action_type,status,payload) "
-                "VALUES (?,?,?,?,?)",
-                (reminder_id, user, "cashflow_reminder", "shown",
-                 json.dumps({"date": day,
-                             "shortfall_amount": forecast_result["shortfall_amount"],
-                             "first_shortfall_date": forecast_result["first_shortfall_date"]})))
-            connection.commit()
-            should_notify = cursor.rowcount == 1
-        finally:
-            connection.close()
-    return {"should_notify": should_notify, "forecast": forecast_result}
+@app.post("/api/push/register")
+def register_push_device(device: PushDeviceInput, user=Depends(actor)):
+    connection = db()
+    try:
+        connection.execute(
+            "INSERT INTO push_devices(token,owner,platform,updated_at) VALUES (?,?,?,CURRENT_TIMESTAMP) "
+            "ON CONFLICT(token) DO UPDATE SET owner=excluded.owner, "
+            "platform=excluded.platform, updated_at=CURRENT_TIMESTAMP",
+            (device.token, user, device.platform))
+        connection.commit()
+    finally:
+        connection.close()
+    return {"registered": True}
+
+
+@app.post("/api/push/unregister")
+def unregister_push_device(device: PushDeviceInput, user=Depends(actor)):
+    connection = db()
+    try:
+        removed = connection.execute(
+            "DELETE FROM push_devices WHERE token=? AND owner=?",
+            (device.token, user)).rowcount
+        connection.commit()
+    finally:
+        connection.close()
+    return {"unregistered": removed == 1}
 
 
 @app.get("/api/accounts")
