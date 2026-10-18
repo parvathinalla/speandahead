@@ -27,6 +27,7 @@ from finance_engine import (
     amount, autopay_preview, card_comparison, emergency, forecast, joint_risk, money, next_payment_date
 )
 import synthetic_bank as demo_bank
+from tigerdata_store import TigerDataStore
 
 ROOT = Path(__file__).resolve().parent
 load_dotenv(ROOT / ".env")
@@ -35,6 +36,7 @@ MANIFEST = Path(os.getenv("SEED_MANIFEST_PATH", str(ROOT / "seed_manifest.json")
 SQLITE = Path(os.getenv("DB_PATH", str(ROOT / "creditpilot.sqlite3")))
 AUTH_MODE = os.getenv("AUTH_MODE", "demo").strip().lower()
 DATA_MODE = os.getenv("DEMO_DATA_MODE", "synthetic" if AUTH_MODE == "auth0" else "nessie").strip().lower()
+DEMO_STORE = os.getenv("DEMO_STORE", "sqlite").strip().lower()
 ENVIRONMENT = os.getenv("APP_ENV", "development").strip().lower()
 TENANTS_DIR = Path(os.getenv("TENANT_MANIFEST_DIR", str(ROOT / "private" / "tenants")))
 PAYMENT_MODE = os.getenv("PAYMENT_MODE", "simulate").strip().lower()
@@ -44,6 +46,14 @@ if AUTH_MODE not in ("demo", "auth0"):
     raise RuntimeError("AUTH_MODE must be demo or auth0")
 if DATA_MODE not in ("nessie", "synthetic"):
     raise RuntimeError("DEMO_DATA_MODE must be nessie or synthetic")
+if DEMO_STORE not in ("sqlite", "tigerdata"):
+    raise RuntimeError("DEMO_STORE must be sqlite or tigerdata")
+if DEMO_STORE == "tigerdata":
+    if DATA_MODE != "synthetic" or AUTH_MODE != "auth0":
+        raise RuntimeError("TigerData backend requires authenticated synthetic profiles")
+    if not os.getenv("TIGERDATA_DATABASE_URL"):
+        raise RuntimeError("Set TIGERDATA_DATABASE_URL as a server-side secret")
+
 if DATA_MODE == "synthetic" and AUTH_MODE != "auth0":
     raise RuntimeError("Synthetic multiuser accounts require real Auth0 login")
 if PAYMENT_MODE not in ("simulate", "nessie"):
@@ -69,6 +79,17 @@ app.add_middleware(CORSMiddleware, allow_origins=ORIGINS,
                    allow_headers=["Authorization", "Content-Type", "X-Demo-User"])
 
 
+@lru_cache(maxsize=1)
+def tiger_store() -> TigerDataStore:
+    if DEMO_STORE != "tigerdata":
+        raise RuntimeError("TigerData storage is not selected")
+    return TigerDataStore(os.getenv("TIGERDATA_DATABASE_URL", ""))
+
+
+def using_tigerdata() -> bool:
+    return DATA_MODE == "synthetic" and DEMO_STORE == "tigerdata"
+
+
 def db():
     SQLITE.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(SQLITE), timeout=15)
@@ -86,7 +107,10 @@ def init_db():
     connection = db()
     try:
         if DATA_MODE == "synthetic":
-            demo_bank.initialize(connection)
+            if using_tigerdata():
+                tiger_store().initialize()
+            else:
+                demo_bank.initialize(connection)
     finally:
         connection.close()
 
@@ -121,6 +145,8 @@ def manifest_path_for(user: str) -> Path:
 
 
 def has_linked_sandbox(user: str) -> bool:
+    if using_tigerdata():
+        return tiger_store().get(user) is not None
     if DATA_MODE == "synthetic":
         connection = db()
         try:
@@ -140,6 +166,11 @@ def has_linked_sandbox(user: str) -> bool:
 
 
 def manifest(user: str = "demo-sarah") -> dict:
+    if using_tigerdata():
+        try:
+            return tiger_store().get_or_claim(user)
+        except (ValueError, RuntimeError):
+            raise HTTPException(503, "Unable to assign a secure demo profile") from None
     if DATA_MODE == "synthetic":
         connection = db()
         try:
@@ -390,7 +421,8 @@ def forecast_from(a, m, days=14, reserve=0):
 @app.get("/health")
 def health():
     return {"status": "ok", "app": "CreditPilot", "auth_mode": AUTH_MODE,
-            "data_mode": DATA_MODE, "payment_mode": PAYMENT_MODE,
+            "data_mode": DATA_MODE, "demo_storage": DEMO_STORE,
+            "payment_mode": PAYMENT_MODE,
             "seed_manifest_present": MANIFEST.is_file()}
 
 
@@ -435,6 +467,8 @@ def require_synthetic():
 @app.get("/api/demo/catalog")
 def synthetic_catalog(user=Depends(actor)):
     require_synthetic()
+    if using_tigerdata():
+        return tiger_store().stats()
     connection = db()
     try:
         return demo_bank.stats(connection)
@@ -464,6 +498,8 @@ class IncomeUpdate(BaseModel):
 def update_demo_income(body: IncomeUpdate, user=Depends(actor)):
     require_synthetic()
     manifest(user)
+    if using_tigerdata():
+        return tiger_store().revise_income(user, body.monthly_income)
     connection = db()
     try:
         return demo_bank.revise_income(connection, user, body.monthly_income)
@@ -495,9 +531,37 @@ def get_demo_transactions(limit: int = 50, offset: int = 0, user=Depends(actor))
     if not 1 <= limit <= 100 or offset < 0:
         raise HTTPException(422, "Limit must be 1–100, offset must be nonnegative")
     m = manifest(user)
+    if using_tigerdata():
+        return tiger_store().transactions(user, limit, offset)
     records = m.get("transactions", [])
     return {"transactions": records[offset:offset+limit], "total": len(records),
             "limit": limit, "offset": offset, "source": demo_bank.DATA_SOURCE}
+
+
+@app.get("/api/transactions/summary")
+def get_spending_summary(days: int = 30, user=Depends(actor)):
+    require_synthetic()
+    if not 1 <= days <= 365:
+        raise HTTPException(422, "Days must be between 1 and 365")
+    m = manifest(user)
+    if using_tigerdata():
+        return tiger_store().spending_summary(user, days)
+    # SQLite compatibility: the same output contract for SDK consumers.
+    today = date.today()
+    totals = {}
+    for item in m.get("transactions", []):
+        when = date.fromisoformat(str(item["date"])[:10])
+        if (today - when).days not in range(days + 1):
+            continue
+        if item["direction"] != "debit" or item["category"] == "transfer":
+            continue
+        category = item["category"]
+        row = totals.setdefault(category, {"category": category, "amount": 0.0, "count": 0})
+        row["amount"] = round(row["amount"] + float(item["amount"]), 2)
+        row["count"] += 1
+    rows = sorted(totals.values(), key=lambda x: x["amount"], reverse=True)
+    return {"period_days": days, "by_category": rows,
+            "source": demo_bank.DATA_SOURCE, "storage": "sqlite"}
 
 
 class DemoBillInput(BaseModel):
@@ -512,6 +576,10 @@ class DemoBillInput(BaseModel):
 def create_demo_bill(body: DemoBillInput, user=Depends(actor)):
     require_synthetic()
     manifest(user)
+    if using_tigerdata():
+        payload = body.model_dump()
+        payload["payment_date"] = body.payment_date.isoformat()
+        return {"bill": tiger_store().upsert_bill(user, payload)}
     connection = db()
     try:
         payload = body.model_dump()
@@ -525,6 +593,13 @@ def create_demo_bill(body: DemoBillInput, user=Depends(actor)):
 def update_demo_bill(bill_id: str, body: DemoBillInput, user=Depends(actor)):
     require_synthetic()
     manifest(user)
+    if using_tigerdata():
+        payload = body.model_dump()
+        payload["payment_date"] = body.payment_date.isoformat()
+        try:
+            return {"bill": tiger_store().upsert_bill(user, payload, bill_id)}
+        except ValueError:
+            raise HTTPException(404, "Bill not found in this user's demo portfolio") from None
     connection = db()
     try:
         payload = body.model_dump()
@@ -541,6 +616,12 @@ def update_demo_bill(bill_id: str, body: DemoBillInput, user=Depends(actor)):
 def delete_demo_bill(bill_id: str, user=Depends(actor)):
     require_synthetic()
     manifest(user)
+    if using_tigerdata():
+        try:
+            tiger_store().delete_bill(user, bill_id)
+        except ValueError:
+            raise HTTPException(404, "Bill not found in this user's demo portfolio") from None
+        return {"bill_id": bill_id, "status": "deleted_from_demo"}
     connection = db()
     try:
         try:
@@ -858,6 +939,12 @@ async def execute_transfer(body: TransferRequest, request: Request, user=Depends
         if PAYMENT_MODE != "simulate":
             raise HTTPException(409, "Synthetic banking supports simulation-only transfers")
         manifest(user)
+        if using_tigerdata():
+            try:
+                return tiger_store().simulated_transfer(
+                    user, body.amount, body.idempotency_key, body.savings_reserve)
+            except ValueError:
+                raise HTTPException(409, "Simulated transfer rejected") from None
         connection = db()
         try:
             try:
