@@ -12,7 +12,7 @@
 
 ## Technology
 
-Flutter mobile/web → FastAPI → deterministic financial engine + Nessie sandbox. SQLite stores demo approvals/plans, Auth0 verifies access tokens when configured, Gemini can explain calculated results when configured.
+Flutter mobile/web → FastAPI → deterministic financial engine + Nessie sandbox. SQLite stores demo approvals/plans, Auth0 validates access tokens on the backend and provides hosted login/signup, Gemini can explain calculated results when configured.
 
 **Data truth:** Nessie supplies fictional balances. Our own scenario data supplies upcoming bills, rewards rates, credit limits, statement dates, and simulated joint partner information. We label all of these separately.
 
@@ -26,22 +26,32 @@ python -m pip install -r backend/requirements.txt
 if (!(Test-Path backend\.env)) { Copy-Item backend\.env.example backend\.env }
 notepad backend\.env
 python backend\scripts\seed_nessie.py --apply
-python backend\scripts\seed_nessie.py --verify
-python -m uvicorn main:app --app-dir backend --host 127.0.0.1 --port 8000 --reload
+python -m uvicorn main:app --app-dir backend --host 127.0.0.1 --port 8765
 ```
 
-Open `http://127.0.0.1:8000/docs` for API docs.
+For **real Auth0 signup/login**, set `AUTH_MODE=auth0`, `AUTH0_DOMAIN`,
+`AUTH0_AUDIENCE` in backend/.env and restart FastAPI.
 
 ### Flutter (in another terminal)
 
 ```powershell
 flutter pub get
-flutter run -d chrome --web-port=8080 --dart-define=API_BASE_URL=http://127.0.0.1:8000
+flutter run -d chrome --web-port=8080 --dart-define=API_BASE_URL=http://127.0.0.1:8765 --dart-define=AUTH0_DOMAIN=YOUR_TENANT.us.auth0.com --dart-define=AUTH0_WEB_CLIENT_ID=YOUR_PUBLIC_WEB_CLIENT_ID --dart-define=AUTH0_AUDIENCE=https://api.creditpilot.example
 ```
 
-For Android emulator, use `http://10.0.2.2:8000`.
+Both **Log In** and **Create Account** use Auth0 Universal Login / PKCE.
+Newly registered users see a safe account-linking screen until an administrator
+provisions **their own** Nessie sandbox mapping. See
+[Auth0 Production Setup](docs/AUTH0_PRODUCTION_SETUP.md).
 
-For complete routes, security notes and cloud deployment instructions, see [Backend README](backend/README.md). For Nessie seeding limitations, see [SEEDING.md](backend/SEEDING.md).
+**If Auth0 isn't configured yet**, local debug mode with a fictional account
+can be enabled by compiling Flutter with `--dart-define=DEV_DEMO_AUTH=true`
+and retaining backend `AUTH_MODE=demo`. It cannot be enabled in a release
+build. It does not demonstrate real authentication.
+
+Deployment templates: [HTTPS Docker Compose](deploy/README.md). Backend
+endpoints: [Backend README](backend/README.md). Nessie bill limitation:
+[SEEDING.md](backend/SEEDING.md).
 
 ## Testing
 
@@ -59,8 +69,8 @@ GitHub Actions checks backend tests and Flutter analysis/tests.
 
 | Owner | Area |
 |---|---|
-| Bindhu | Flutter UI, Nessie adapter and authentication integration |
-| Parvathi | FastAPI routes, sandbox actions, persistence, deployment |
+| Bindhu | Flutter UI, Auth0 tenant connection and device verification |
+| Parvathi | FastAPI routes, Auth0 security, sandbox isolation, deployment |
 | Rohith | Financial calculations and scenario tests |
 | Ajit | Auth0 integration support, Gemini explanations, end-to-end QA |
 
