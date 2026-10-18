@@ -7,17 +7,12 @@ import '../../features/autopay/autopay_plans_screen.dart';
 import '../../features/autopay/autopay_review_screen.dart';
 import '../../features/autopay/autopay_screen.dart';
 import '../../features/bills/bills_forecast_screen.dart';
-import '../../features/bills/bills_screen.dart';
 import '../../features/bills/transfer_review_screen.dart';
 import '../../features/cards/card_compare_screen.dart';
 import '../../features/cards/card_merchant_screen.dart';
-import '../../features/cards/cards_screen.dart';
 import '../../features/emergency/emergency_results_screen.dart';
-import '../../features/emergency/emergency_screen.dart';
-import '../../features/home/home_screen.dart';
 import '../../features/joint/joint_new_transfer_screen.dart';
 import '../../features/joint/joint_review_screen.dart';
-import '../../features/joint/joint_screen.dart';
 import '../../features/settings/settings_screen.dart';
 import '../../screens/main_shell.dart';
 

@@ -15,11 +15,11 @@ class JointReviewScreen extends StatefulWidget {
 }
 
 class _JointReviewScreenState extends State<JointReviewScreen> {
-  String? _selectedAction;
+  //String? _selectedAction;
   final TextEditingController _noteController = TextEditingController();
 
   Future<void> _handleSubmit(String decision) async {
-    setState(() => _selectedAction = decision);
+    //setState(() => _selectedAction = decision);
     await AppState.instance.submitJointDecision(widget.reviewId, decision);
     if (mounted) {
       ScaffoldMessenger.of(context).showSnackBar(

@@ -30,7 +30,7 @@ class _AutoPayReviewScreenState extends State<AutoPayReviewScreen> {
     return AnimatedBuilder(
       animation: AppState.instance,
       builder: (context, _) {
-        final state = AppState.instance;
+        //final state = AppState.instance;
 
         return Scaffold(
           appBar: AppBar(
