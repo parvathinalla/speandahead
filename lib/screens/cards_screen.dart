@@ -57,7 +57,7 @@ class _CardsScreenState extends State<CardsScreen> {
       showDialog<void>(context: context, builder: (ctx) => AlertDialog(
         title: const Text('Financial Decision Preview'),
         content: Text(
-          'Recommended: ' + card['display_name']?.toString() ?? card['card_name'].toString() +
+          'Recommended: ' + (card['display_name']?.toString() ?? card['card_name'].toString()) +
           '\nUpcoming bills: ' + dollars(cash['total_bills_due']) +
           '\nChecking shortage: ' + dollars(cash['shortfall_amount']) +
           '\nEmergency funding gap: ' + dollars(emergency['potential_gap']) +
